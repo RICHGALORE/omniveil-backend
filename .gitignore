@@ -1,12 +1,8 @@
-__pycache__
+node_modules/
+__pycache__/
 *.pyc
 .env
-venv
-uploads
 .DS_Store
-omniveil.db
-watermarked
-omniveil.db
-watermarked
-omniveil.db
-watermarked
+.next/
+dist/
+build/
