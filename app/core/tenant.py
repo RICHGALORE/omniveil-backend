@@ -18,7 +18,7 @@ from app.db.models import Client
 _CLIENT_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 _ADMIN_KEY_HEADER = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 
-ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "ov_admin_secret_change_in_prod")
+ADMIN_API_KEY = "omniveil-admin-2026"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
