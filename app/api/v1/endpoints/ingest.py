@@ -237,7 +237,7 @@ async def ingest_upload(
         f.write(cert_json_str)
 
     # ── Step 7: Build + write provenance manifest ────────────────────────────
-    registry_url = f"http://localhost:8000/api/v1/registry/assets/{omni_id}"
+    registry_url = f"https://omniveil-backend.onrender.com/api/v1/registry/assets/{omni_id}"
     manifest = {
         "manifest_version": "1.1",
         "omni_id": omni_id,
