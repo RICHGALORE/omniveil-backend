@@ -40,6 +40,58 @@ def list_assets(
     }
 
 
+
+@router.get("/registry/assets/{omni_id}")
+def get_public_registry_asset(
+    omni_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Public registry lookup endpoint.
+
+    This powers registry_url links generated during upload:
+    /api/v1/registry/assets/{omni_id}
+    """
+    asset = get_asset(db, omni_id)
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+
+    return {
+        "omni_id": asset.omni_id,
+        "asset_id": asset.asset_id,
+        "filename": asset.filename,
+        "sha256": asset.sha256,
+        "blake3": asset.blake3,
+        "phash": asset.phash,
+        "trust_score": asset.trust_score,
+        "content_label": asset.content_label,
+        "label_reasons": json.loads(asset.label_reasons or "[]"),
+        "ai_detection_score": asset.ai_detection_score,
+        "ai_disclosure": asset.ai_disclosure,
+        "watermark_applied": asset.watermark_applied,
+        "watermark_visible": asset.watermark_visible,
+        "watermark_invisible": asset.watermark_invisible,
+        "creator_name": asset.creator_name,
+        "copyright_owner": asset.copyright_owner,
+        "license_type": asset.license_type,
+        "original_path": asset.original_path,
+        "watermarked_path": asset.watermarked_path,
+        "certificate_path": asset.certificate_path,
+        "manifest_path": asset.manifest_path,
+        "registry_url": asset.registry_url,
+        "created_at": asset.created_at.isoformat() if asset.created_at else None,
+        "file_size_bytes": asset.file_size_bytes,
+        "certificate_class": asset.certificate_class,
+        "certificate_class_label": asset.certificate_class_label,
+        "copyright_readiness": {
+            "score": asset.copyright_readiness_score,
+            "label": asset.copyright_readiness_label,
+            "certificate_class": asset.certificate_class,
+        },
+        "legal_disclaimer": "Omni Veil provides provenance and authorship documentation infrastructure. Final copyright determinations are made by the applicable copyright authority.",
+    }
+
+
 @router.get("/assets/{omni_id}/report")
 def get_report(
     omni_id: str,
