@@ -15,56 +15,15 @@ limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create all DB tables
-    from app.db.session import init_db, SessionLocal
     init_db()
 
-    # Ensure storage folders exist
-    for folder in ("uploads/originals", "uploads/watermarked",
-                   "uploads/certificates", "uploads/manifests"):
-        os.makedirs(folder, exist_ok=True)
-
-    # Seed the demo tenant on first run
-    _seed_demo_tenant(SessionLocal())
+    db = SessionLocal()
+    try:
+        seed_demo_client(db)
+    finally:
+        db.close()
 
     yield
-
-
-def _seed_demo_tenant(db) -> None:
-    """
-    Create the default demo tenant if it doesn't exist.
-    Uses OMNI_API_KEY from env (or the config default) as its API key.
-    This tenant owns all uploads made without a registered client.
-    """
-    from app.db.models import Client
-    from app.core.tenant import hash_api_key
-    from app.core.config import settings
-    from datetime import datetime
-    import uuid
-
-    if db.query(Client).filter(Client.tenant_id == "demo-tenant").first():
-        db.close()
-        return
-
-    raw_key = settings.omni_api_key
-    client = Client(
-        id=str(uuid.uuid4()),
-        tenant_id="demo-tenant",
-        company_name="Omni Veil Demo",
-        contact_name="Demo User",
-        email="demo@omniveil.internal",
-        industry="Technology",
-        status="approved",
-        plan="founder",
-        api_key_hash=hash_api_key(raw_key),
-        created_at=datetime.utcnow(),
-        approved_at=datetime.utcnow(),
-    )
-    db.add(client)
-    db.commit()
-    db.close()
-    print(f"[startup] Demo tenant seeded — API key: {raw_key}")
-
 
 app = FastAPI(
     title="Omni Veil Trust OS",
@@ -94,6 +53,8 @@ app.add_middleware(
 )
 
 from app.api.v1.router import api_router
+from app.db.session import init_db, SessionLocal
+from app.db.seed import seed_demo_client
 app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/health")
