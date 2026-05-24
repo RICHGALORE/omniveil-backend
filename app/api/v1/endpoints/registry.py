@@ -117,6 +117,8 @@ def get_report(
         "asset_id": asset.asset_id,
         "filename": asset.filename,
         "file_type": asset.file_type,
+        "mime_type": asset.mime_type,
+        "asset_type": asset.asset_type,
         "sha256": asset.sha256,
         "blake3": asset.blake3,
         "phash": asset.phash,
