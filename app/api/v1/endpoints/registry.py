@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 import json
+import mimetypes
 
 from app.core.tenant import resolve_tenant
 from app.db.session import get_db
@@ -117,8 +118,8 @@ def get_report(
         "asset_id": asset.asset_id,
         "filename": asset.filename,
         "file_type": asset.file_type,
-        "mime_type": asset.mime_type,
-        "asset_type": asset.asset_type,
+        "mime_type": getattr(asset, "mime_type", None) or asset.file_type or mimetypes.guess_type(asset.filename or "")[0],
+        "asset_type": getattr(asset, "asset_type", None) or ((asset.file_type or mimetypes.guess_type(asset.filename or "")[0] or "file").split("/")[0]),
         "sha256": asset.sha256,
         "blake3": asset.blake3,
         "phash": asset.phash,
