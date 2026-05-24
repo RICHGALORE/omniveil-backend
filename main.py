@@ -7,6 +7,7 @@ from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 import os
+import sys
 
 load_dotenv()
 
@@ -15,13 +16,20 @@ limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
-
-    db = SessionLocal()
     try:
-        seed_demo_client(db)
-    finally:
-        db.close()
+        init_db()
+
+        db = SessionLocal()
+        try:
+            seed_demo_client(db)
+        finally:
+            db.close()
+
+        print("Omni Veil startup database init/seed complete.")
+    except Exception as exc:
+        # Do not crash the whole Render service on database startup failure.
+        # Health endpoint must stay available so infrastructure can be debugged safely.
+        print(f"WARNING: Omni Veil database startup init/seed failed: {exc}", file=sys.stderr)
 
     yield
 
