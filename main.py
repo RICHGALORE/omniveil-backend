@@ -67,7 +67,7 @@ app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.1.0", "env": os.getenv("APP_ENV", "development")}
+    return {"status": "ok", "version": "0.1.0", "env": os.getenv("ENVIRONMENT", os.getenv("APP_ENV", "development"))}
 
 @app.get("/")
 async def root():
