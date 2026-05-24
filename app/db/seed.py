@@ -7,6 +7,7 @@ from app.db.models import Client
 
 SEED_DEMO_CLIENT = os.getenv("SEED_DEMO_CLIENT", "true").lower() == "true"
 DEMO_TENANT_ID = os.getenv("DEMO_TENANT_ID", "demo-tenant")
+DEMO_CLIENT_ID = os.getenv("DEMO_CLIENT_ID", "acb8b49e-0095-421a-a9bb-26ecabe7e62e")
 
 
 def _hash_api_key(raw_key: str) -> str:
@@ -40,6 +41,7 @@ def seed_demo_client(db):
     key_hash = _hash_api_key(raw_key)
 
     demo = Client(
+        id=DEMO_CLIENT_ID,
         tenant_id=DEMO_TENANT_ID,
         company_name="Omni Veil Demo",
         contact_name="Demo User",
