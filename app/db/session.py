@@ -10,6 +10,11 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+# Use modern psycopg v3 driver for Postgres.
+# This avoids psycopg2 SSL/runtime issues in production deploys.
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+
 if ENVIRONMENT == "production":
     if not DATABASE_URL or DATABASE_URL.startswith("sqlite"):
         print(
