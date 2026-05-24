@@ -40,3 +40,4 @@ email-validator>=2.0.0
 exifread>=3.0.0      # EXIF from images
 mutagen>=1.47.0      # Audio tags (ID3, Vorbis, etc.)
 pypdf>=5.0.0         # PDF metadata
+psycopg2-binary>=2.9.9
