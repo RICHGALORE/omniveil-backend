@@ -5,6 +5,7 @@ from datetime import datetime
 from app.core.tenant import require_admin, generate_api_key
 from app.db.session import get_db
 from app.db.models import Client
+from app.db.seed import seed_demo_client
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -90,6 +91,18 @@ def regenerate_key(client_id: str, db: Session = Depends(get_db)):
         "tenant_id": client.tenant_id,
         "api_key": raw_key,           # shown ONCE — not stored
         "warning": "Save this API key — it will not be shown again.",
+    }
+
+
+# ── POST /admin/seed-demo-client ──────────────────────────────────────────────
+
+@router.post("/seed-demo-client", dependencies=[Depends(require_admin)])
+def seed_demo_client_endpoint(db: Session = Depends(get_db)):
+    seed_demo_client(db)
+    demo = db.query(Client).filter(Client.tenant_id == "demo-tenant").first()
+    return {
+        "message": "Demo client seeded",
+        "client": _client_summary(demo) if demo else None,
     }
 
 
