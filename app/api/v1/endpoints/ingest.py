@@ -23,6 +23,10 @@ WATERMARKED_DIR = "uploads/watermarked"
 CERTIFICATES_DIR = "uploads/certificates"
 MANIFESTS_DIR = "uploads/manifests"
 
+# Ensure Render/local upload directories exist before writing files.
+for _dir in (ORIGINALS_DIR, WATERMARKED_DIR, CERTIFICATES_DIR, MANIFESTS_DIR):
+    os.makedirs(_dir, exist_ok=True)
+
 hive.set_key(settings.omni_api_key)
 hive.set_sightengine("1158794285", "7NBWjGaZYhTfbV6S4dawgLJxHZMu2ytA")
 
