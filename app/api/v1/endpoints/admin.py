@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 
 from app.core.tenant import require_admin, generate_api_key
-from app.db.session import get_db
+from app.db.session import get_db, init_db
 from app.db.models import Client
 from app.db.seed import seed_demo_client
 
@@ -98,6 +98,7 @@ def regenerate_key(client_id: str, db: Session = Depends(get_db)):
 
 @router.post("/seed-demo-client", dependencies=[Depends(require_admin)])
 def seed_demo_client_endpoint(db: Session = Depends(get_db)):
+    init_db()
     seed_demo_client(db)
     demo = db.query(Client).filter(Client.tenant_id == "demo-tenant").first()
     return {
