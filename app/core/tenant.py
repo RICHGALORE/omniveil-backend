@@ -18,7 +18,10 @@ from app.db.models import Client
 _CLIENT_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 _ADMIN_KEY_HEADER = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 
-ADMIN_API_KEY = "omniveil-admin-2026"
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
+
+if not ADMIN_API_KEY:
+    raise RuntimeError("ADMIN_API_KEY environment variable is required")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
