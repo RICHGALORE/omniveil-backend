@@ -20,9 +20,6 @@ _ADMIN_KEY_HEADER = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 
-if not ADMIN_API_KEY:
-    raise RuntimeError("ADMIN_API_KEY environment variable is required")
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
