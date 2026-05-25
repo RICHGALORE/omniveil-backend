@@ -78,5 +78,5 @@ def require_admin(admin_key: str = Security(_ADMIN_KEY_HEADER)) -> None:
     Dependency for all /admin/* endpoints.
     Validates the X-Admin-Key header against ADMIN_API_KEY env var.
     """
-    if not admin_key or not secrets.compare_digest(admin_key, ADMIN_API_KEY):
+    if not ADMIN_API_KEY or not admin_key or not secrets.compare_digest(admin_key, ADMIN_API_KEY):
         raise HTTPException(status_code=403, detail="Admin access required")
