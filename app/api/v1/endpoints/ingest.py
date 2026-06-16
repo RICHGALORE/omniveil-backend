@@ -172,6 +172,14 @@ async def ingest_upload(
     )
     trust = compute_trust_score(signals)
 
+    # ── Live Split / contributor metadata from provenance ─────────────────────
+    live_split = provenance.get("live_split") or {}
+    contributors = live_split.get("contributors") or provenance.get("contributors") or []
+    section_c_ownership_splits = provenance.get("section_c_ownership_splits") or {}
+
+    if contributors and contributor_count is None:
+        contributor_count = len(contributors)
+
     # ── Copyright readiness score ────────────────────────────────────────────
     cr_signals = AuthorshipSignals(
         human_creative_direction=human_creative_direction,
@@ -228,7 +236,7 @@ async def ingest_upload(
         ai_disclosure_complete=ai_disclosure_complete,
         ai_modification_by_human=ai_modification_by_human,
         ai_detection_score=ai_score,
-        contributors=[],   # contributor rows added in step 4 (live-split endpoint)
+        contributors=contributors,
     )
     cert_payload = build_certificate(cert_ctx)
     sig = sign_certificate(cert_payload)
@@ -258,6 +266,9 @@ async def ingest_upload(
         "copyright_owner": copyright_owner,
         "license_type": license_type,
         "ai_disclosure": ai_disclosure,
+        "live_split": live_split,
+        "contributors": contributors,
+        "section_c_ownership_splits": section_c_ownership_splits,
         "watermark_applied": wm_visible or wm_invisible,
         "watermark_visible": wm_visible,
         "watermark_invisible": wm_invisible,
