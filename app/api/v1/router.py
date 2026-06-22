@@ -1,3 +1,4 @@
+from app.api.v1.endpoints import certificate_verify
 from fastapi import APIRouter
 
 from app.api.v1.endpoints.ingest import router as ingest_router
@@ -13,3 +14,5 @@ api_router.include_router(verify_router)
 api_router.include_router(registry_router)
 api_router.include_router(admin_router)
 api_router.include_router(clients_router)
+
+router.include_router(certificate_verify.router, prefix="/api/v1", tags=["Certificate Verification"])
