@@ -42,3 +42,4 @@ mutagen>=1.47.0      # Audio tags (ID3, Vorbis, etc.)
 pypdf>=5.0.0         # PDF metadata
 psycopg2-binary>=2.9.9
 psycopg[binary]>=3.2.0
+cryptography>=42.0.0
