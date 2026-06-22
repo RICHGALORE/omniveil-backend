@@ -12,3 +12,6 @@ omniveil.db
 uploads/
 __pycache__/
 *.pyc
+
+# Omni Veil local trust authority keys
+.secrets/

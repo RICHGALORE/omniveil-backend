@@ -132,3 +132,27 @@ def verify_certificate_signature(
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Omni Veil Trust Authority key management
+# ---------------------------------------------------------------------------
+
+def get_or_create_dev_trust_keypair(path: str = ".secrets/ov_root_dev_keypair.json") -> Dict[str, str]:
+    """
+    Development-only persistent root keypair.
+
+    This prevents a new signing key from being generated on every upload.
+    Production must replace this with AWS KMS / AWS Secrets Manager / offline vault.
+    """
+    from pathlib import Path
+
+    key_path = Path(path)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if key_path.exists():
+        return json.loads(key_path.read_text())
+
+    keys = generate_ed25519_keypair()
+    key_path.write_text(json.dumps(keys, indent=2))
+    return keys

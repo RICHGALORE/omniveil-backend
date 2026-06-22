@@ -9,7 +9,7 @@ from app.utils.hashing import sha256_bytes, blake3_bytes, phash_image, generate_
 from app.utils.watermark import apply_visible_watermark, apply_invisible_watermark
 from app.utils.metadata import extract_metadata
 from app.utils.security import hash_event, sign_certificate as legacy_hmac_sign_certificate, compute_manifest_hash
-from app.services.crypto_signing import generate_ed25519_keypair, sign_certificate as ed25519_sign_certificate
+from app.services.crypto_signing import get_or_create_dev_trust_keypair, sign_certificate as ed25519_sign_certificate
 from app.services.trust import TrustSignals, compute_trust_score
 from app.services.copyright_readiness import AuthorshipSignals, compute_copyright_readiness
 from app.services.certificate import CertificateContext, build_certificate
@@ -260,7 +260,7 @@ async def ingest_upload(
 
     # Development Trust Authority keypair.
     # Production must use OV private keys from AWS KMS / Secrets Manager / offline vault.
-    trust_keys = generate_ed25519_keypair()
+    trust_keys = get_or_create_dev_trust_keypair()
 
     signed_cert_payload = ed25519_sign_certificate(
         certificate=cert_payload,
