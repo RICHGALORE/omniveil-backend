@@ -8,7 +8,8 @@ from app.core.config import settings
 from app.utils.hashing import sha256_bytes, blake3_bytes, phash_image, generate_omni_id
 from app.utils.watermark import apply_visible_watermark, apply_invisible_watermark
 from app.utils.metadata import extract_metadata
-from app.utils.security import hash_event, sign_certificate, compute_manifest_hash
+from app.utils.security import hash_event, sign_certificate as legacy_hmac_sign_certificate, compute_manifest_hash
+from app.services.crypto_signing import generate_ed25519_keypair, sign_certificate as ed25519_sign_certificate
 from app.services.trust import TrustSignals, compute_trust_score
 from app.services.copyright_readiness import AuthorshipSignals, compute_copyright_readiness
 from app.services.certificate import CertificateContext, build_certificate
@@ -239,8 +240,40 @@ async def ingest_upload(
         contributors=contributors,
     )
     cert_payload = build_certificate(cert_ctx)
-    sig = sign_certificate(cert_payload)
-    cert_payload["signature"] = sig
+
+    certificate_metadata_lock = {
+        "omni_id": omni_id,
+        "asset_id": asset_id,
+        "filename": original_filename,
+        "file_type": mime_type,
+        "file_size_bytes": len(data),
+        "sha256": sha256,
+        "blake3": b3,
+        "phash": ph,
+        "creator_name": creator_name,
+        "copyright_owner": copyright_owner,
+        "license_type": license_type,
+        "ai_disclosure": ai_disclosure,
+        "contributors": contributors,
+        "created_at": now.isoformat(),
+    }
+
+    # Development Trust Authority keypair.
+    # Production must use OV private keys from AWS KMS / Secrets Manager / offline vault.
+    trust_keys = generate_ed25519_keypair()
+
+    signed_cert_payload = ed25519_sign_certificate(
+        certificate=cert_payload,
+        metadata=certificate_metadata_lock,
+        private_key_b64=trust_keys["private_key_b64"],
+        public_key_b64=trust_keys["public_key_b64"],
+        public_key_id="OV-ROOT-DEV-001",
+    )
+
+    signed_cert_payload["metadata_lock"] = certificate_metadata_lock
+    signed_cert_payload["legacy_hmac_signature"] = legacy_hmac_sign_certificate(cert_payload)
+
+    cert_payload = signed_cert_payload
     cert_json_str = json.dumps(cert_payload, indent=2)
     cert_hash = sha256_bytes(cert_json_str.encode())
 
