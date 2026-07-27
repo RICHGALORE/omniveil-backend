@@ -15,4 +15,4 @@ api_router.include_router(registry_router)
 api_router.include_router(admin_router)
 api_router.include_router(clients_router)
 
-router.include_router(certificate_verify.router, prefix="/api/v1", tags=["Certificate Verification"])
+api_router.include_router(certificate_verify.router, prefix="", tags=["Certificate Verification"])
