@@ -16,6 +16,11 @@ SIGNATURE_FIELDS = {
     "metadata_hash",
     "public_key",
     "public_key_id",
+    # Appended to the certificate by the ingest pipeline AFTER the Ed25519
+    # signature is computed, so they are not part of the signed content and
+    # must be excluded when recomputing certificate_hash during verification.
+    "metadata_lock",
+    "legacy_hmac_signature",
 }
 
 def canonical_json(data: Dict[str, Any]) -> bytes:
