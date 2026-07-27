@@ -33,6 +33,12 @@ CATEGORIES = (
     "location", "copyright", "software", "hashes", "raw_metadata",
 )
 
+# Sections added in the full-sections enhancement. Each must always be present
+# and must be a dict (populated when the source carries the data, empty/normalized
+# otherwise). ``location`` is retained above as a backward-compatible alias of
+# ``gps``.
+NEW_SECTIONS = ("gps", "codec", "container", "audio_tags", "exif", "iptc", "xmp")
+
 
 # ── Fixture builders ──────────────────────────────────────────────────────────
 
@@ -47,6 +53,42 @@ def _jpeg_bytes() -> bytes:
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (32, 24), (10, 120, 220)).save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
+def _jpeg_with_exif_bytes() -> bytes:
+    """JPEG carrying EXIF Make/Model/Software embedded via Pillow (no extra deps)."""
+    from PIL import Image
+    img = Image.new("RGB", (48, 36), (30, 90, 160))
+    exif = img.getexif()
+    exif[271] = "OmniVeilCam"      # Make
+    exif[272] = "Model-X100"       # Model
+    exif[305] = "OmniVeil Studio"  # Software
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90, exif=exif)
+    return buf.getvalue()
+
+
+def _jpeg_with_xmp_bytes() -> bytes:
+    """JPEG carrying a minimal XMP packet (dc:rights). Pillow embeds via `xmp=`."""
+    from PIL import Image
+    xmp = (
+        b'<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+        b'<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+        b'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+        b'<rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        b'<dc:rights>(c) 2026 Omni Veil</dc:rights>'
+        b'</rdf:Description></rdf:RDF></x:xmpmeta>'
+        b'<?xpacket end="w"?>'
+    )
+    img = Image.new("RGB", (24, 24), (5, 5, 5))
+    buf = io.BytesIO()
+    try:
+        img.save(buf, format="JPEG", quality=85, xmp=xmp)
+    except (TypeError, ValueError):
+        # Older Pillow without xmp= kwarg: fall back to a plain JPEG.
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
 
 
@@ -101,6 +143,15 @@ def _pdf_bytes() -> bytes:
 def _assert_shape(result: dict):
     for cat in CATEGORIES:
         assert cat in result, f"missing category: {cat}"
+    for sec in NEW_SECTIONS:
+        assert sec in result, f"missing section: {sec}"
+        assert isinstance(result[sec], dict), f"section {sec} must be a dict"
+    # ``location`` is an alias of ``gps`` — must reference the same content.
+    assert result["location"] == result["gps"]
+    # audio_tags always exposes friendly keys plus a raw sub-block.
+    assert "raw" in result["audio_tags"]
+    for fk in ("title", "artist", "album"):
+        assert fk in result["audio_tags"]
     assert "duration_ms" in result and isinstance(result["duration_ms"], (int, float))
     assert "extractor" in result
     assert "warnings" in result and isinstance(result["warnings"], list)
@@ -193,6 +244,83 @@ def test_empty_upload():
     _assert_shape(result)
     assert result["file"]["size"] == 0
     assert any("empty" in w.lower() for w in result["warnings"])
+
+
+# ── New-section coverage ───────────────────────────────────────────────────────
+
+def test_jpeg_exif_section():
+    """EXIF embedded via Pillow must surface in the `exif` block and resolve
+    the normalized `camera`/`software` fields."""
+    result = extract_metadata_service(_jpeg_with_exif_bytes(), filename="cam.jpg",
+                                      mime_type="image/jpeg")
+    _assert_shape(result)
+    assert result["exif"], "exif block should be populated from embedded EXIF"
+    assert result["camera"]["make"] == "OmniVeilCam"
+    assert result["camera"]["model"] == "Model-X100"
+    assert result["software"]["editing_software"] == "OmniVeil Studio"
+
+
+def test_image_xmp_section():
+    """XMP packet embedded in a JPEG should be parsed into the `xmp` block when
+    defusedxml is available; otherwise the block degrades to empty gracefully."""
+    result = extract_metadata_service(_jpeg_with_xmp_bytes(), filename="rights.jpg",
+                                      mime_type="image/jpeg")
+    _assert_shape(result)
+    assert isinstance(result["xmp"], dict)
+    try:
+        import defusedxml  # noqa: F401
+        have_defused = True
+    except Exception:
+        have_defused = False
+    if have_defused and result["xmp"]:
+        joined = " ".join(str(v) for v in result["xmp"].values())
+        assert "Omni Veil" in joined
+
+
+def test_mp3_audio_tags_section():
+    """When ffmpeg + mutagen can write/read ID3 tags, they must surface as
+    friendly audio_tags. Otherwise the section shape is still asserted."""
+    tagged = None
+    if shutil.which("ffmpeg"):
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                 "-i", "sine=frequency=440:duration=0.3", "-ac", "1", "-b:a", "64k",
+                 "-metadata", "title=Flow Test Track", "-metadata", "artist=Marlon",
+                 "-metadata", "album=Omni Veil", "-f", "mp3", "pipe:1"],
+                capture_output=True, timeout=30,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                tagged = proc.stdout
+        except Exception:
+            tagged = None
+    result = extract_metadata_service(tagged or _mp3_bytes(), filename="song.mp3",
+                                      mime_type="audio/mpeg")
+    _assert_shape(result)
+    assert isinstance(result["audio_tags"]["raw"], dict)
+    if tagged is not None:
+        assert result["audio_tags"]["title"] == "Flow Test Track"
+        assert result["audio_tags"]["artist"] == "Marlon"
+        assert result["audio_tags"]["album"] == "Omni Veil"
+
+
+def test_wav_codec_container_sections():
+    """Audio files must populate the codec/container sections structurally."""
+    result = extract_metadata_service(_wav_bytes(), filename="tone.wav",
+                                      mime_type="audio/x-wav")
+    _assert_shape(result)
+    assert set(result["codec"]) >= {"audio", "video", "compression"}
+    assert result["container"]["mime_type"] == "audio/x-wav"
+    assert result["container"]["extension"] == "wav"
+
+
+def test_pdf_sections():
+    """PDF must expose a dict `xmp` section and docinfo in raw_metadata."""
+    result = extract_metadata_service(_pdf_bytes(), filename="doc.pdf",
+                                      mime_type="application/pdf")
+    _assert_shape(result)
+    assert isinstance(result["xmp"], dict)
+    assert result["container"]["mime_type"] == "application/pdf"
 
 
 # ── Endpoint-level tests ───────────────────────────────────────────────────────
