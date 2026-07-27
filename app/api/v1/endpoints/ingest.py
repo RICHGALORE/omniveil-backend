@@ -384,7 +384,7 @@ async def ingest_upload(
         subject_name=creator_name or "Unknown",
         certificate_class=cr.certificate_class,
         cert_json=cert_json_str,
-        signature=sig,
+        signature=cert_payload["signature"],
     ))
 
     # ── Provenance events (immutable audit trail) ────────────────────────────
