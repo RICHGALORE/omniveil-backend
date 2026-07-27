@@ -13,5 +13,10 @@ uploads/
 __pycache__/
 *.pyc
 
+# Local dev/test scratch
+.venv/
+.pytest_cache/
+regression_check.py
+
 # Omni Veil local trust authority keys
 .secrets/

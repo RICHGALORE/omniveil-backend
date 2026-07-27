@@ -67,6 +67,13 @@ class Asset(Base):
     # evidence. Does not represent legal copyright status or ownership certainty.
     copyright_readiness_score = Column(Float, nullable=True)          # 0.0 – 1.0
     copyright_readiness_label = Column(String, nullable=True)         # strong | moderate | limited | insufficient
+
+    # ── Certificate classification ─────────────────────────────────────────────
+    # Columns already created by the additive migration in db/session.py
+    # (assets.certificate_class / assets.certificate_class_label). Declared here
+    # so the ORM can read them; the public registry endpoint references these.
+    certificate_class = Column(String, nullable=True)
+    certificate_class_label = Column(String, nullable=True)
     ai_disclosure_complete = Column(Boolean, nullable=True)
     ai_tools_used_json = Column(Text, nullable=True)                  # JSON array of tool names
     ai_modification_by_human = Column(Boolean, nullable=True)
