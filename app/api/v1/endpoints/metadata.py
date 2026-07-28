@@ -101,11 +101,12 @@ def get_asset_trust_score(
     record = get_metadata_by_omni_id(db, omni_id, tenant_id=tenant.tenant_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Metadata not found")
-    score = ensure_trust_score(db, record)
+    score = ensure_trust_score(db, record, include_explanations=True)
     return {
         "omni_id": record.omni_id,
         "overall": score["overall"],
         "breakdown": score["breakdown"],
+        "explanations": score["explanations"],
         "engine_version": score["engine_version"],
         "analyzed_at": score["scored_at"],
     }

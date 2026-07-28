@@ -99,17 +99,30 @@ def _clamp01(x: float) -> float:
     return 0.0 if x < 0 else 1.0 if x > 1 else x
 
 
-# ── Individual factor scorers (each returns a fraction in [0, 1]) ───────────────
+# ── Individual factor scorers ───────────────────────────────────────────────────
+#
+# Each scorer returns ``(fraction, reason)`` where ``fraction`` is in [0, 1] and
+# ``reason`` is a truthful, human-readable explanation of exactly what was and
+# was not credited. The reason strings are deterministic functions of the input
+# so identical metadata always yields identical explanations.
 
-def _score_completeness(normalized: Dict[str, Any]) -> float:
-    populated = sum(
-        1 for name in _COMPLETENESS_SECTIONS
-        if _is_populated(normalized.get(name))
-    )
-    return _clamp01(populated / len(_COMPLETENESS_SECTIONS))
+def _score_completeness(normalized: Dict[str, Any]) -> tuple[float, str]:
+    present = [name for name in _COMPLETENESS_SECTIONS
+               if _is_populated(normalized.get(name))]
+    missing = [name for name in _COMPLETENESS_SECTIONS
+               if not _is_populated(normalized.get(name))]
+    fraction = _clamp01(len(present) / len(_COMPLETENESS_SECTIONS))
+    if not missing:
+        reason = (f"All {len(_COMPLETENESS_SECTIONS)} canonical metadata "
+                  f"sections are populated.")
+    else:
+        shown = ", ".join(missing[:6]) + ("…" if len(missing) > 6 else "")
+        reason = (f"{len(present)}/{len(_COMPLETENESS_SECTIONS)} canonical "
+                  f"sections populated; missing: {shown}.")
+    return fraction, reason
 
 
-def _score_consistency(normalized: Dict[str, Any]) -> float:
+def _score_consistency(normalized: Dict[str, Any]) -> tuple[float, str]:
     """Internal cross-field agreement. Only applicable checks are counted."""
     file_ = _section(normalized, "file")
     container = _section(normalized, "container")
@@ -117,6 +130,7 @@ def _score_consistency(normalized: Dict[str, Any]) -> float:
 
     applicable = 0
     passed = 0
+    failures: list[str] = []
 
     # 1. Extension agreement (file vs container).
     f_ext = _first_str(file_, "extension", "ext")
@@ -125,6 +139,8 @@ def _score_consistency(normalized: Dict[str, Any]) -> float:
         applicable += 1
         if f_ext.lower() == c_ext.lower():
             passed += 1
+        else:
+            failures.append("file/container extension mismatch")
 
     # 2. MIME agreement (file vs container).
     f_mime = _first_str(file_, "mime_type", "mime")
@@ -133,50 +149,91 @@ def _score_consistency(normalized: Dict[str, Any]) -> float:
         applicable += 1
         if f_mime.lower() == c_mime.lower():
             passed += 1
+        else:
+            failures.append("file/container MIME mismatch")
 
     # 3. File size is present and positive (always applicable).
     applicable += 1
     size = file_.get("size", file_.get("size_bytes"))
     if isinstance(size, (int, float)) and size > 0:
         passed += 1
+    else:
+        failures.append("file size missing or non-positive")
 
     # 4. MIME is well-formed (always applicable).
     applicable += 1
     if f_mime and "/" in f_mime:
         passed += 1
+    else:
+        failures.append("MIME type absent or malformed")
 
     # 5. Primary hash present + well-formed (always applicable).
     applicable += 1
     if _is_hex(hashes.get("sha256"), 64):
         passed += 1
+    else:
+        failures.append("SHA-256 absent or malformed")
 
-    return _clamp01(passed / applicable) if applicable else 1.0
+    fraction = _clamp01(passed / applicable) if applicable else 1.0
+    if not failures:
+        reason = f"All {applicable} applicable cross-field checks agree."
+    else:
+        reason = (f"{passed}/{applicable} cross-field checks passed; "
+                  f"issues: {', '.join(failures)}.")
+    return fraction, reason
 
 
 def _score_hash_integrity(normalized: Dict[str, Any],
-                          derived: Dict[str, Any]) -> float:
+                          derived: Dict[str, Any]) -> tuple[float, str]:
     hashes = _section(normalized, "hashes")
     score = 0.0
+    present: list[str] = []
+    missing: list[str] = []
     if _is_hex(hashes.get("sha256"), 64):
         score += 0.5
+        present.append("SHA-256")
+    else:
+        missing.append("SHA-256")
     if _is_hex(hashes.get("md5"), 32):
         score += 0.25
+        present.append("MD5")
+    else:
+        missing.append("MD5")
     # Deterministic metadata digest computed by the persistence layer.
     if _is_hex(derived.get("metadata_sha256"), 64):
         score += 0.25
-    return _clamp01(score)
+        present.append("metadata digest")
+    else:
+        missing.append("metadata digest")
+
+    if not missing:
+        reason = ("SHA-256, MD5 and the deterministic metadata digest are all "
+                  "present and well-formed.")
+    elif present:
+        reason = (f"Present and well-formed: {', '.join(present)}; "
+                  f"missing/invalid: {', '.join(missing)}.")
+    else:
+        reason = "No valid cryptographic fingerprints present."
+    return _clamp01(score), reason
 
 
-def _score_container(normalized: Dict[str, Any]) -> float:
+def _score_container(normalized: Dict[str, Any]) -> tuple[float, str]:
     container = _section(normalized, "container")
     file_ = _section(normalized, "file")
     score = 0.0
+    parts: list[str] = []
     c_mime = _first_str(container, "mime_type", "mime")
     c_ext = _first_str(container, "extension", "ext")
     if c_mime:
         score += 0.4
+        parts.append("MIME present")
+    else:
+        parts.append("MIME missing")
     if c_ext:
         score += 0.3
+        parts.append("extension present")
+    else:
+        parts.append("extension missing")
     # Coherence with the file-level identity.
     f_mime = _first_str(file_, "mime_type", "mime")
     f_ext = _first_str(file_, "extension", "ext")
@@ -187,10 +244,14 @@ def _score_container(normalized: Dict[str, Any]) -> float:
         coherent = True
     if coherent:
         score += 0.3
-    return _clamp01(score)
+        parts.append("coherent with file identity")
+    else:
+        parts.append("no file-identity coherence confirmed")
+    reason = "Container: " + ", ".join(parts) + "."
+    return _clamp01(score), reason
 
 
-def _score_creator(normalized: Dict[str, Any]) -> float:
+def _score_creator(normalized: Dict[str, Any]) -> tuple[float, str]:
     """Presence of creator / ownership / device attribution signals."""
     copyright_ = _section(normalized, "copyright")
     camera = _section(normalized, "camera")
@@ -198,28 +259,35 @@ def _score_creator(normalized: Dict[str, Any]) -> float:
     xmp = _section(normalized, "xmp")
     audio_tags = _section(normalized, "audio_tags")
 
-    signals = [
-        _first_str(copyright_, "creator", "artist", "copyright_owner",
-                   "copyright", "rights", "author"),
-        _first_str(camera, "make", "model"),
-        _first_str(software, "editing_software", "creator_tool",
-                   "export_application", "software"),
-        _first_str(xmp, "creator", "rights", "dc:creator", "dc:rights"),
-        _first_str(audio_tags, "artist", "album_artist", "composer"),
+    labelled = [
+        ("copyright/creator", _first_str(copyright_, "creator", "artist",
+            "copyright_owner", "copyright", "rights", "author")),
+        ("camera device", _first_str(camera, "make", "model")),
+        ("software/tool", _first_str(software, "editing_software",
+            "creator_tool", "export_application", "software")),
+        ("XMP rights", _first_str(xmp, "creator", "rights", "dc:creator",
+            "dc:rights")),
+        ("audio artist", _first_str(audio_tags, "artist", "album_artist",
+            "composer")),
     ]
-    present = sum(1 for s in signals if s)
+    present = [name for name, val in labelled if val]
     # Two independent signals -> full credit; one -> half.
-    return _clamp01(present / 2.0)
+    fraction = _clamp01(len(present) / 2.0)
+    if present:
+        reason = ("Attribution signals present: " + ", ".join(present) +
+                  (" (two or more → full credit)." if len(present) >= 2
+                   else " (only one → half credit)."))
+    else:
+        reason = "No creator / ownership / device attribution signals present."
+    return fraction, reason
 
 
-def _score_timestamps(normalized: Dict[str, Any]) -> float:
+def _score_timestamps(normalized: Dict[str, Any]) -> tuple[float, str]:
     ts = _section(normalized, "timestamps")
-    if not _is_populated(ts):
-        return 0.0
-
-    values = [v for v in ts.values() if isinstance(v, str) and v.strip()]
+    values = [v for v in ts.values() if isinstance(v, str) and v.strip()] \
+        if _is_populated(ts) else []
     if not values:
-        return 0.0
+        return 0.0, "No timestamps present in the metadata."
 
     score = 0.5  # at least one timestamp present
 
@@ -233,9 +301,16 @@ def _score_timestamps(normalized: Dict[str, Any]) -> float:
         # presence of two distinct timestamps.
         if created <= modified:
             score += 0.5
+            reason = ("Timestamps present and coherent "
+                      "(created ≤ modified).")
         else:
             score += 0.25
-    return _clamp01(score)
+            reason = ("Timestamps present but inconsistent "
+                      "(created is later than modified).")
+    else:
+        reason = ("At least one timestamp present; created/modified pair "
+                  "incomplete, so ordering could not be confirmed.")
+    return _clamp01(score), reason
 
 
 # ── Public entry point ─────────────────────────────────────────────────────────
@@ -257,18 +332,24 @@ def compute_metadata_trust_score(
             "completeness": 24, "consistency": 19, "hash_integrity": 20,
             "container": 14, "creator": 8, "timestamps": 7
           },
+          "explanations": {
+            "completeness": {"points": 24, "max": 25, "reason": "…"},
+            ...
+          },
           "engine_version": "1.0.0"
         }
 
     Safe on missing/partial/empty inputs — every factor degrades gracefully to a
-    lower fraction rather than raising.
+    lower fraction rather than raising. Both ``breakdown`` and ``explanations``
+    are deterministic functions of the input, so identical metadata always
+    yields an identical result (including reason strings).
     """
     normalized = normalized or {}
     derived = derived or {}
     # ``raw`` is accepted for future factors and interface completeness; the
     # current factor set is driven by the normalized + derived layers.
 
-    fractions = {
+    scored = {
         "completeness": _score_completeness(normalized),
         "consistency": _score_consistency(normalized),
         "hash_integrity": _score_hash_integrity(normalized, derived),
@@ -278,7 +359,15 @@ def compute_metadata_trust_score(
     }
 
     breakdown = {
-        factor: int(round(fractions[factor] * WEIGHTS[factor]))
+        factor: int(round(scored[factor][0] * WEIGHTS[factor]))
+        for factor in WEIGHTS
+    }
+    explanations = {
+        factor: {
+            "points": breakdown[factor],
+            "max": WEIGHTS[factor],
+            "reason": scored[factor][1],
+        }
         for factor in WEIGHTS
     }
     overall = sum(breakdown.values())
@@ -288,5 +377,6 @@ def compute_metadata_trust_score(
     return {
         "overall": overall,
         "breakdown": breakdown,
+        "explanations": explanations,
         "engine_version": SCORE_ENGINE_VERSION,
     }
