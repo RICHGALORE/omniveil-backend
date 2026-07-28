@@ -9,6 +9,15 @@ imagehash). No upload ever fails because ExifTool is unavailable.
 
 This commit performs extraction ONLY. It does not persist anything, does not
 touch the database, registry, certificates, verify page, or trust scoring.
+
+Normalized top-level sections returned:
+    file, technical, codec, container, timestamps, camera, gps, location,
+    copyright, software, audio_tags, exif, iptc, xmp, hashes, raw_metadata
+plus the envelope fields: extractor, exiftool_available, supported,
+duration_ms, warnings.
+
+``location`` is retained as a backward-compatible alias of ``gps`` for existing
+consumers; ``gps`` is the canonical section going forward.
 """
 from __future__ import annotations
 
@@ -52,6 +61,26 @@ VIDEO_EXTS = {"mp4", "mov", "avi", "mkv"}
 AUDIO_EXTS = {"mp3", "wav", "aif", "aiff", "flac", "aac", "m4a"}
 DOC_EXTS = {"pdf", "docx", "pptx", "xlsx"}
 
+# ExifTool group prefixes (with -G) mapped onto our normalized blocks.
+_EXIF_GROUPS = {"EXIF", "IFD0", "IFD1", "MAKERNOTES", "EXIFIFD", "SUBIFD"}
+_IPTC_GROUPS = {"IPTC"}
+_XMP_GROUPS = {"XMP", "XMP-DC", "XMP-XMP", "XMP-PHOTOSHOP", "XMP-RIGHTS"}
+_AUDIO_GROUPS = {"ID3", "ID3V1", "ID3V2", "VORBIS", "APE", "MPC"}
+_GPS_GROUPS = {"GPS"}
+
+# ID3 / common tag frame -> friendly audio-tag name.
+_AUDIO_TAG_MAP = {
+    "tit2": "title", "title": "title",
+    "tpe1": "artist", "artist": "artist",
+    "talb": "album", "album": "album",
+    "tcon": "genre", "genre": "genre",
+    "tdrc": "year", "tyer": "year", "date": "year", "year": "year",
+    "trck": "track", "tracknumber": "track", "track": "track",
+    "comm": "comment", "comment": "comment",
+    "tpe2": "album_artist", "albumartist": "album_artist",
+    "tcom": "composer", "composer": "composer",
+}
+
 
 def exiftool_available() -> bool:
     """Return True if the ExifTool binary is on PATH."""
@@ -68,19 +97,9 @@ def extract_metadata_service(
     """
     Extract normalized metadata from raw file bytes.
 
-    Returns a dict with a stable top-level shape:
-        {
-          "extractor": "exiftool" | "python-fallback",
-          "exiftool_available": bool,
-          "supported": bool,
-          "duration_ms": float,
-          "file": {...}, "technical": {...}, "timestamps": {...},
-          "camera": {...}, "location": {...}, "copyright": {...},
-          "software": {...}, "hashes": {...}, "raw_metadata": {...},
-          "warnings": [...]
-        }
+    Returns a dict with a stable top-level shape (see module docstring).
     Never raises on malformed/corrupt/empty input — extraction failures are
-    reported inside the returned structure.
+    reported inside the returned structure's ``warnings`` list.
     """
     started = time.perf_counter()
     filename = filename or "file"
@@ -115,32 +134,47 @@ def extract_metadata_service(
     logger.info("Extractor selected: %s (exiftool_available=%s, supported=%s)",
                 extractor, use_exiftool, supported)
 
+    # Structured sub-blocks populated by the extractors below.
+    blocks: Dict[str, Dict[str, Any]] = {
+        "exif": {}, "iptc": {}, "xmp": {}, "audio_tags": {},
+    }
+
     raw: Dict[str, Any] = {}
     if size > 0:
         if use_exiftool:
             raw, exif_warn = _run_exiftool(data, ext)
             warnings.extend(exif_warn)
             if not raw:
-                # ExifTool produced nothing usable -> fall back to python.
                 logger.info("ExifTool returned no data; using python fallback.")
                 extractor = "python-fallback"
-                raw = _python_raw(data, ext, resolved_mime, warnings)
+                raw = _python_raw(data, ext, resolved_mime, warnings, blocks)
+            else:
+                _partition_exiftool_groups(raw, blocks)
         else:
-            raw = _python_raw(data, ext, resolved_mime, warnings)
+            raw = _python_raw(data, ext, resolved_mime, warnings, blocks)
 
     # ── Normalize into categories ──────────────────────────────────────────────
     lower = {str(k).lower(): v for k, v in raw.items()}
+    gps = _normalize_gps(lower)
     result = {
         "extractor": extractor,
         "exiftool_available": use_exiftool,
         "supported": supported,
         "file": file_cat,
         "technical": _normalize_technical(lower, data, ext, resolved_mime),
+        "codec": _normalize_codec(lower, ext, resolved_mime),
+        "container": _normalize_container(lower, ext, resolved_mime),
         "timestamps": _normalize_timestamps(lower),
         "camera": _normalize_camera(lower),
-        "location": _normalize_location(lower),
+        "gps": gps,
+        # Backward-compatible alias; existing consumers/tests read `location`.
+        "location": gps,
         "copyright": _normalize_copyright(lower),
         "software": _normalize_software(lower),
+        "audio_tags": _normalize_audio_tags(blocks["audio_tags"], lower, ext, resolved_mime),
+        "exif": blocks["exif"],
+        "iptc": blocks["iptc"],
+        "xmp": blocks["xmp"],
         "hashes": hashes,
         "raw_metadata": raw,
         "warnings": warnings,
@@ -200,8 +234,6 @@ def _run_exiftool(data: bytes, ext: str) -> tuple[Dict[str, Any], list[str]]:
         if isinstance(parsed, list) and parsed:
             raw = parsed[0]
             raw.pop("SourceFile", None)
-            # Strip the "Group:" prefixes ExifTool adds with -G for cleaner keys,
-            # while keeping the fully-qualified value under raw_metadata.
             return raw, warnings
         return {}, warnings
     except Exception as e:  # never fail the upload
@@ -215,18 +247,38 @@ def _run_exiftool(data: bytes, ext: str) -> tuple[Dict[str, Any], list[str]]:
                 pass
 
 
+def _partition_exiftool_groups(raw: Dict[str, Any], blocks: Dict[str, Dict[str, Any]]) -> None:
+    """Split ExifTool ``-G`` output (keys look like ``EXIF:Make``) into the
+    normalized exif / iptc / xmp / audio_tags blocks. Keys without a group
+    prefix are ignored here (they remain available in ``raw_metadata``)."""
+    for key, value in raw.items():
+        if ":" not in str(key):
+            continue
+        group, _, tag = str(key).partition(":")
+        gu = group.upper()
+        if gu in _EXIF_GROUPS:
+            blocks["exif"][tag] = value
+        elif gu in _IPTC_GROUPS:
+            blocks["iptc"][tag] = value
+        elif gu in _XMP_GROUPS or gu.startswith("XMP"):
+            blocks["xmp"][tag] = value
+        elif gu in _AUDIO_GROUPS:
+            blocks["audio_tags"][tag] = value
+
+
 # ── Pure-Python fallback path ─────────────────────────────────────────────────
 
-def _python_raw(data: bytes, ext: str, mime: str, warnings: list[str]) -> Dict[str, Any]:
+def _python_raw(data: bytes, ext: str, mime: str, warnings: list[str],
+                blocks: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Fallback extraction using libraries already in the repo."""
     raw: Dict[str, Any] = {}
     try:
         if ext in IMAGE_EXTS or mime.startswith("image/"):
-            raw.update(_py_image(data, warnings))
+            raw.update(_py_image(data, warnings, blocks))
         elif ext in AUDIO_EXTS or mime.startswith("audio/"):
-            raw.update(_py_audio(data, warnings))
+            raw.update(_py_audio(data, warnings, blocks))
         elif ext == "pdf" or mime == "application/pdf":
-            raw.update(_py_pdf(data, warnings))
+            raw.update(_py_pdf(data, warnings, blocks))
         elif ext in VIDEO_EXTS or mime.startswith("video/"):
             warnings.append(
                 "Video metadata requires ExifTool; pure-Python fallback provides "
@@ -244,8 +296,10 @@ def _python_raw(data: bytes, ext: str, mime: str, warnings: list[str]) -> Dict[s
     return raw
 
 
-def _py_image(data: bytes, warnings: list[str]) -> Dict[str, Any]:
+def _py_image(data: bytes, warnings: list[str],
+              blocks: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
+    img = None
     # Pillow: format / size / mode
     try:
         from PIL import Image
@@ -256,18 +310,50 @@ def _py_image(data: bytes, warnings: list[str]) -> Dict[str, Any]:
         out["ColorMode"] = img.mode
     except Exception as e:
         warnings.append(f"Pillow could not open image: {type(e).__name__}")
-    # EXIF via exifread
+    # EXIF via exifread (raw + structured exif/gps block)
     try:
         import exifread
         tags = exifread.process_file(io.BytesIO(data), details=False)
         for k, v in tags.items():
-            out[str(k)] = str(v)
+            ks = str(k)
+            out[ks] = str(v)
+            grp = ks.split(" ")[0].upper()
+            if grp in ("IMAGE", "EXIF", "THUMBNAIL") or ks.upper().startswith("EXIF"):
+                blocks["exif"][ks] = str(v)
     except Exception:
         pass
+    # IPTC via Pillow (best-effort; only JPEG/TIFF carry IPTC)
+    if img is not None:
+        try:
+            from PIL import IptcImagePlugin
+            iptc = IptcImagePlugin.getiptcinfo(img)
+            if iptc:
+                for key, val in iptc.items():
+                    try:
+                        sval = val.decode("utf-8", "ignore") if isinstance(val, bytes) else (
+                            [x.decode("utf-8", "ignore") if isinstance(x, bytes) else x for x in val]
+                            if isinstance(val, (list, tuple)) else val)
+                    except Exception:
+                        sval = str(val)
+                    blocks["iptc"][f"{key[0]}:{key[1]}"] = sval
+        except Exception:
+            pass
+        # XMP via Pillow (>=8.2). Needs defusedxml; if absent Pillow warns and
+        # returns {} — suppress the warning and degrade gracefully.
+        try:
+            import warnings as _w
+            with _w.catch_warnings():
+                _w.simplefilter("ignore")
+                xmp = img.getxmp() if hasattr(img, "getxmp") else {}
+            if xmp:
+                blocks["xmp"].update(_flatten_xmp(xmp))
+        except Exception:
+            pass
     return out
 
 
-def _py_audio(data: bytes, warnings: list[str]) -> Dict[str, Any]:
+def _py_audio(data: bytes, warnings: list[str],
+              blocks: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     try:
         import mutagen
@@ -278,9 +364,12 @@ def _py_audio(data: bytes, warnings: list[str]) -> Dict[str, Any]:
                 for attr in ("length", "bitrate", "sample_rate", "channels", "bits_per_sample"):
                     if hasattr(info, attr):
                         out[attr] = getattr(info, attr)
+                if hasattr(info, "codec"):
+                    out["codec"] = getattr(info, "codec")
             if getattr(f, "tags", None):
                 for k, v in f.tags.items():
                     out[str(k)] = str(v)
+                    blocks["audio_tags"][str(k)] = str(v)
         else:
             warnings.append("mutagen could not parse audio stream.")
     except Exception as e:
@@ -288,7 +377,8 @@ def _py_audio(data: bytes, warnings: list[str]) -> Dict[str, Any]:
     return out
 
 
-def _py_pdf(data: bytes, warnings: list[str]) -> Dict[str, Any]:
+def _py_pdf(data: bytes, warnings: list[str],
+            blocks: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     try:
         from pypdf import PdfReader
@@ -297,6 +387,22 @@ def _py_pdf(data: bytes, warnings: list[str]) -> Dict[str, Any]:
         info = reader.metadata or {}
         for k, v in info.items():
             out[str(k)] = str(v)
+        # XMP metadata packet, when present.
+        try:
+            xmp = reader.xmp_metadata
+            if xmp is not None:
+                for attr in ("dc_title", "dc_creator", "dc_description", "dc_subject",
+                             "dc_publisher", "dc_rights", "xmp_create_date",
+                             "xmp_modify_date", "xmp_creator_tool", "pdf_producer",
+                             "pdf_keywords"):
+                    try:
+                        val = getattr(xmp, attr, None)
+                    except Exception:
+                        val = None
+                    if val:
+                        blocks["xmp"][attr] = str(val)
+        except Exception:
+            pass
     except Exception as e:
         warnings.append(f"pypdf error: {type(e).__name__}")
     return out
@@ -304,6 +410,29 @@ def _py_pdf(data: bytes, warnings: list[str]) -> Dict[str, Any]:
 
 def _py_container_basic(data: bytes, ext: str) -> Dict[str, Any]:
     return {"Container": ext.upper() if ext else None, "ByteSize": len(data)}
+
+
+def _flatten_xmp(xmp: Any, prefix: str = "") -> Dict[str, Any]:
+    """Flatten Pillow's nested getxmp() dict into flat 'a.b.c' -> value pairs."""
+    flat: Dict[str, Any] = {}
+    if isinstance(xmp, dict):
+        for k, v in xmp.items():
+            key = f"{prefix}.{k}" if prefix else str(k)
+            if isinstance(v, (dict, list)):
+                flat.update(_flatten_xmp(v, key))
+            else:
+                flat[key] = v
+    elif isinstance(xmp, list):
+        for i, v in enumerate(xmp):
+            key = f"{prefix}[{i}]"
+            if isinstance(v, (dict, list)):
+                flat.update(_flatten_xmp(v, key))
+            else:
+                flat[key] = v
+    else:
+        if prefix:
+            flat[prefix] = xmp
+    return flat
 
 
 # ── Normalization helpers ──────────────────────────────────────────────────────
@@ -340,6 +469,25 @@ def _normalize_technical(lower, data, ext, mime) -> Dict[str, Any]:
     }
 
 
+def _normalize_codec(lower, ext, mime) -> Dict[str, Any]:
+    return {
+        "audio": _first(lower, "audiocodec", "codec", "audioformat", "compression"
+                        ) if (ext in AUDIO_EXTS or mime.startswith("audio/")) else _first(lower, "audiocodec"),
+        "video": _first(lower, "videocodec", "compressorid", "compression"
+                        ) if (ext in VIDEO_EXTS or mime.startswith("video/")) else None,
+        "compression": _first(lower, "compression"),
+    }
+
+
+def _normalize_container(lower, ext, mime) -> Dict[str, Any]:
+    return {
+        "format": _first(lower, "filetype", "format", "fileformat") or (ext.upper() if ext else None),
+        "major_brand": _first(lower, "majorbrand"),
+        "mime_type": _first(lower, "mimetype") or mime,
+        "extension": _first(lower, "filetypeextension") or (ext or None),
+    }
+
+
 def _normalize_timestamps(lower) -> Dict[str, Any]:
     return {
         "created": _first(lower, "createdate", "datetimeoriginal", "creationdate", "/creationdate"),
@@ -362,15 +510,19 @@ def _normalize_camera(lower) -> Dict[str, Any]:
     }
 
 
-def _normalize_location(lower) -> Dict[str, Any]:
+def _normalize_gps(lower) -> Dict[str, Any]:
     lat = _first(lower, "gpslatitude", "gps gpslatitude")
     lon = _first(lower, "gpslongitude", "gps gpslongitude")
+    alt = _first(lower, "gpsaltitude", "gps gpsaltitude")
     coords = None
     if lat is not None and lon is not None:
         coords = {"latitude": lat, "longitude": lon}
-    gps = _first(lower, "gpsposition")
+    gps_pos = _first(lower, "gpsposition")
     return {
-        "gps": gps if gps is not None else (coords is not None),
+        "gps": gps_pos if gps_pos is not None else (coords is not None),
+        "latitude": lat,
+        "longitude": lon,
+        "altitude": alt,
         "country": _first(lower, "country", "countrycode", "gpscountry"),
         "city": _first(lower, "city", "sub-location"),
         "coordinates": coords,
@@ -388,10 +540,27 @@ def _normalize_copyright(lower) -> Dict[str, Any]:
 
 def _normalize_software(lower) -> Dict[str, Any]:
     return {
-        "editing_software": _first(lower, "software", "creatortool", "/creator", "processingsoftware"),
+        "editing_software": _first(lower, "software", "image software", "creatortool", "/creator", "processingsoftware"),
         "encoder": _first(lower, "encoder", "encodedby", "encodingtool"),
         "export_application": _first(lower, "applicationname", "producer", "/producer", "hostcomputer"),
     }
+
+
+def _normalize_audio_tags(audio_block: Dict[str, Any], lower, ext, mime) -> Dict[str, Any]:
+    """Produce friendly audio tag names plus the raw tag block."""
+    friendly: Dict[str, Any] = {
+        "title": None, "artist": None, "album": None, "genre": None,
+        "year": None, "track": None, "comment": None,
+        "album_artist": None, "composer": None,
+    }
+    for key, val in (audio_block or {}).items():
+        base = str(key).split(":")[0].lower()
+        # ID3 frames sometimes look like "COMM::eng"; take leading alpha token.
+        base = "".join(ch for ch in base if ch.isalpha() or ch.isdigit())
+        friendly_name = _AUDIO_TAG_MAP.get(base)
+        if friendly_name and friendly.get(friendly_name) in (None, ""):
+            friendly[friendly_name] = val
+    return {**friendly, "raw": audio_block or {}}
 
 
 def _extension(filename: str) -> str:
