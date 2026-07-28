@@ -15,6 +15,7 @@ from app.db.models import (  # noqa: F401
     LiveSplitSession,
     VerificationLog,
     Client,
+    AssetMetadata,
 )
 import json
 

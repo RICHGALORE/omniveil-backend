@@ -1,13 +1,15 @@
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime
-import json, os, uuid
+import json, os, uuid, logging
 
 from app.core.tenant import resolve_tenant
 from app.core.config import settings
 from app.utils.hashing import sha256_bytes, blake3_bytes, phash_image, generate_omni_id
 from app.utils.watermark import apply_visible_watermark, apply_invisible_watermark
 from app.utils.metadata import extract_metadata
+from app.services.metadata_extraction import extract_metadata_service
+from app.services.metadata_persistence import persist_asset_metadata
 from app.utils.security import hash_event, sign_certificate as legacy_hmac_sign_certificate, compute_manifest_hash
 from app.services.crypto_signing import get_or_create_dev_trust_keypair, sign_certificate as ed25519_sign_certificate
 from app.services.trust import TrustSignals, compute_trust_score
@@ -18,6 +20,8 @@ from app.db import get_db, save_asset, ProvenanceEvent, Certificate
 from app.db.models import Client
 
 router = APIRouter()
+
+logger = logging.getLogger("omniveil.ingest")
 
 ORIGINALS_DIR = "uploads/originals"
 WATERMARKED_DIR = "uploads/watermarked"
@@ -411,6 +415,26 @@ async def ingest_upload(
     ))
 
     db.commit()
+
+    # ── Metadata Intelligence Commit 2: persist normalized extraction ─────────
+    # Runs AFTER the asset is durably committed so a metadata-persistence failure
+    # can never roll back or fail the upload. Extraction-only inputs; no change
+    # to the upload response shape, Live Split, certificates, registry or verify.
+    try:
+        extraction = extract_metadata_service(
+            data, filename=original_filename, mime_type=mime_type
+        )
+        persist_asset_metadata(
+            db,
+            asset_id=asset_id,
+            tenant_id=tenant.tenant_id,
+            omni_id=omni_id,
+            extraction=extraction,
+        )
+    except Exception as exc:  # never break the upload on metadata persistence
+        logger.warning(
+            "Metadata persistence skipped for omni_id=%s: %s", omni_id, exc
+        )
 
     return {
         "omni_id": omni_id,

@@ -1,14 +1,22 @@
 """
-Metadata Intelligence Engine — Commit 1: temporary extraction endpoint.
+Metadata Intelligence Engine — endpoints.
 
-Exposes a SINGLE temporary endpoint that accepts an uploaded asset and returns
-the normalized metadata JSON produced by the extraction service. This endpoint
-performs extraction ONLY — nothing is persisted, and no other subsystem
-(registry, certificates, verify, trust scoring) is touched.
+Commit 1 exposed a stateless extraction endpoint (``POST /metadata/extract``).
+Commit 2 adds read endpoints for the durable, per-asset metadata persisted at
+upload time. Persistence itself happens in the upload flow via the dedicated
+persistence service; these endpoints are read-only and tenant-isolated.
 """
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from sqlalchemy.orm import Session
 
+from app.core.tenant import resolve_tenant
+from app.db import get_db
+from app.db.models import Client
 from app.services.metadata_extraction import extract_metadata_service
+from app.services.metadata_persistence import (
+    get_metadata_by_omni_id,
+    serialize_record,
+)
 
 router = APIRouter(prefix="/metadata", tags=["metadata"])
 
@@ -30,3 +38,45 @@ async def extract_metadata(file: UploadFile = File(...)):
         filename=file.filename,
         mime_type=file.content_type,
     )
+
+
+@router.get("/assets/{omni_id}")
+def get_asset_metadata(
+    omni_id: str,
+    tenant: Client = Depends(resolve_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the persisted metadata record for ``omni_id`` belonging to the
+    authenticated tenant. 404 if no record exists for this tenant (which also
+    covers records owned by a different tenant — they are never disclosed).
+    """
+    record = get_metadata_by_omni_id(db, omni_id, tenant_id=tenant.tenant_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Metadata not found")
+    return serialize_record(record)
+
+
+@router.get("/assets/{omni_id}/raw")
+def get_asset_metadata_raw(
+    omni_id: str,
+    tenant: Client = Depends(resolve_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Return only the raw-extractor layer for ``omni_id`` (tenant-isolated).
+    Kept minimal and separate from the full record for clean layer separation.
+    """
+    record = get_metadata_by_omni_id(db, omni_id, tenant_id=tenant.tenant_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Metadata not found")
+    full = serialize_record(record)
+    return {
+        "omni_id": full["omni_id"],
+        "asset_id": full["asset_id"],
+        "engine_name": full["engine_name"],
+        "engine_version": full["engine_version"],
+        "extractor": full["extractor"],
+        "metadata_sha256": full["metadata_sha256"],
+        "raw_metadata": full["raw_metadata"],
+    }
