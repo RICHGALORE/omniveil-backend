@@ -247,6 +247,15 @@ class AssetMetadata(Base):
 
     extraction_duration_ms = Column(Float, nullable=True)
 
+    # ── Metadata Trust Score (Commit 3) ────────────────────────────────────────
+    # Deterministic 0–100 score computed from the persisted metadata layers, with
+    # a JSON breakdown of the weighted factors. Stamped with the scoring engine
+    # version and the timestamp at which the score was computed.
+    metadata_trust_score = Column(Integer, nullable=True)          # 0–100
+    metadata_score_breakdown_json = Column(Text, nullable=True)    # {"completeness": .., ...}
+    metadata_score_engine_version = Column(String, nullable=True)
+    metadata_scored_at = Column(DateTime, nullable=True)
+
     analyzed_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

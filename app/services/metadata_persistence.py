@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import AssetMetadata
 from app.services.metadata_extraction import ENGINE_NAME, ENGINE_VERSION
+from app.services.metadata_trust_score import compute_metadata_trust_score
 
 logger = logging.getLogger("omniveil.metadata.persistence")
 
@@ -91,6 +92,16 @@ def _apply(record: AssetMetadata, *, asset_id: str, tenant_id: Optional[str],
     record.extraction_duration_ms = float(duration) if duration is not None else None
     record.analyzed_at = now
     record.updated_at = now
+
+    # ── Metadata Trust Score (Commit 3) ────────────────────────────────────────
+    # Deterministic score computed from the persisted layers we just built, so it
+    # is stored at persist time. Same metadata -> same score.
+    score = compute_metadata_trust_score(raw=raw, normalized=normalized,
+                                         derived=derived)
+    record.metadata_trust_score = score["overall"]
+    record.metadata_score_breakdown_json = _canonical_json(score["breakdown"])
+    record.metadata_score_engine_version = score["engine_version"]
+    record.metadata_scored_at = now
 
 
 def persist_asset_metadata(
@@ -182,17 +193,18 @@ def get_metadata_by_omni_id(
     return q.first()
 
 
+def _safe_load(blob: Optional[str], default):
+    if not blob:
+        return default
+    try:
+        return json.loads(blob)
+    except Exception:
+        return default
+
+
 def serialize_record(record: AssetMetadata) -> Dict[str, Any]:
     """Serialize a persisted record into a JSON-safe API response dict,
     re-hydrating the three stored JSON layers."""
-    def _load(blob: Optional[str], default):
-        if not blob:
-            return default
-        try:
-            return json.loads(blob)
-        except Exception:
-            return default
-
     return {
         "id": record.id,
         "asset_id": record.asset_id,
@@ -205,11 +217,63 @@ def serialize_record(record: AssetMetadata) -> Dict[str, Any]:
         "supported": record.supported,
         "metadata_sha256": record.metadata_sha256,
         "extraction_duration_ms": record.extraction_duration_ms,
-        "raw_metadata": _load(record.raw_metadata_json, {}),
-        "normalized_metadata": _load(record.normalized_metadata_json, {}),
-        "derived_metadata": _load(record.derived_metadata_json, {}),
-        "warnings": _load(record.warnings_json, []),
+        "raw_metadata": _safe_load(record.raw_metadata_json, {}),
+        "normalized_metadata": _safe_load(record.normalized_metadata_json, {}),
+        "derived_metadata": _safe_load(record.derived_metadata_json, {}),
+        "warnings": _safe_load(record.warnings_json, []),
+        # Metadata Trust Score (Commit 3)
+        "metadata_trust_score": record.metadata_trust_score,
+        "metadata_score_breakdown": _safe_load(
+            record.metadata_score_breakdown_json, {}),
+        "metadata_score_engine_version": record.metadata_score_engine_version,
+        "metadata_scored_at": (
+            record.metadata_scored_at.isoformat()
+            if record.metadata_scored_at else None),
         "analyzed_at": record.analyzed_at.isoformat() if record.analyzed_at else None,
         "created_at": record.created_at.isoformat() if record.created_at else None,
         "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+    }
+
+
+def ensure_trust_score(db: Session, record: AssetMetadata) -> Dict[str, Any]:
+    """
+    Return the trust-score payload for a persisted record.
+
+    Fast path: if the record was already scored (normal for uploads made after
+    Commit 3), return the stored score. Lazy path: for a legacy record persisted
+    before Commit 3, compute the score from the stored JSON layers, persist it,
+    and return it. Deterministic and idempotent either way.
+    """
+    if record.metadata_trust_score is not None and record.metadata_score_breakdown_json:
+        return {
+            "overall": record.metadata_trust_score,
+            "breakdown": _safe_load(record.metadata_score_breakdown_json, {}),
+            "engine_version": record.metadata_score_engine_version,
+            "scored_at": (record.metadata_scored_at.isoformat()
+                          if record.metadata_scored_at else None),
+        }
+
+    # Lazy compute from stored layers.
+    normalized = _safe_load(record.normalized_metadata_json, {})
+    raw = _safe_load(record.raw_metadata_json, {})
+    derived = _safe_load(record.derived_metadata_json, {})
+    score = compute_metadata_trust_score(raw=raw, normalized=normalized,
+                                         derived=derived)
+    now = datetime.utcnow()
+    try:
+        record.metadata_trust_score = score["overall"]
+        record.metadata_score_breakdown_json = _canonical_json(score["breakdown"])
+        record.metadata_score_engine_version = score["engine_version"]
+        record.metadata_scored_at = now
+        db.commit()
+        db.refresh(record)
+    except Exception as exc:
+        db.rollback()
+        logger.error("Lazy trust-score persist failed for asset_id=%s: %s",
+                     record.asset_id, exc)
+    return {
+        "overall": score["overall"],
+        "breakdown": score["breakdown"],
+        "engine_version": score["engine_version"],
+        "scored_at": now.isoformat(),
     }

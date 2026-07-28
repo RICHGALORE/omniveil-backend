@@ -117,6 +117,12 @@ def _run_migrations():
 
         # live split sessions — tenant support
         ("live_split_sessions", "tenant_id", "VARCHAR"),
+
+        # asset_metadata — Metadata Trust Score (Commit 3)
+        ("asset_metadata", "metadata_trust_score", "INTEGER"),
+        ("asset_metadata", "metadata_score_breakdown_json", "TEXT"),
+        ("asset_metadata", "metadata_score_engine_version", "VARCHAR"),
+        ("asset_metadata", "metadata_scored_at", "TIMESTAMP"),
     ]
 
     # ── New-table creations (additive, idempotent) ────────────────────────────
@@ -144,6 +150,10 @@ def _run_migrations():
                 warnings_json TEXT,
                 metadata_sha256 VARCHAR,
                 extraction_duration_ms FLOAT,
+                metadata_trust_score INTEGER,
+                metadata_score_breakdown_json TEXT,
+                metadata_score_engine_version VARCHAR,
+                metadata_scored_at TIMESTAMP,
                 analyzed_at TIMESTAMP,
                 created_at TIMESTAMP,
                 updated_at TIMESTAMP
