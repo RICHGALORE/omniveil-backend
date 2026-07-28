@@ -16,6 +16,7 @@ from app.services.metadata_extraction import extract_metadata_service
 from app.services.metadata_persistence import (
     get_metadata_by_omni_id,
     serialize_record,
+    ensure_trust_score,
 )
 
 router = APIRouter(prefix="/metadata", tags=["metadata"])
@@ -79,4 +80,32 @@ def get_asset_metadata_raw(
         "extractor": full["extractor"],
         "metadata_sha256": full["metadata_sha256"],
         "raw_metadata": full["raw_metadata"],
+    }
+
+
+@router.get("/assets/{omni_id}/trust-score")
+def get_asset_trust_score(
+    omni_id: str,
+    tenant: Client = Depends(resolve_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the deterministic metadata trust score for ``omni_id`` (tenant-isolated).
+
+    The score (0–100) is derived purely from the persisted metadata layers
+    (normalized / raw / derived) — no uploaded bytes are re-read. It is computed
+    and stored at persist time; this endpoint returns the stored score, lazily
+    computing and persisting it once if a record predates the scoring engine.
+    404 if no record exists for this tenant.
+    """
+    record = get_metadata_by_omni_id(db, omni_id, tenant_id=tenant.tenant_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Metadata not found")
+    score = ensure_trust_score(db, record)
+    return {
+        "omni_id": record.omni_id,
+        "overall": score["overall"],
+        "breakdown": score["breakdown"],
+        "engine_version": score["engine_version"],
+        "analyzed_at": score["scored_at"],
     }
