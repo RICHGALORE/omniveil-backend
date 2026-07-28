@@ -119,6 +119,45 @@ def _run_migrations():
         ("live_split_sessions", "tenant_id", "VARCHAR"),
     ]
 
+    # ── New-table creations (additive, idempotent) ────────────────────────────
+    # Base.metadata.create_all() already creates these from the ORM models; the
+    # statements below are an explicit, idempotent safety net so the schema is
+    # guaranteed even if create_all is bypassed. CREATE TABLE/INDEX IF NOT EXISTS
+    # is supported by both SQLite (dev) and PostgreSQL (production).
+    table_creations = [
+        (
+            "asset_metadata",
+            """
+            CREATE TABLE IF NOT EXISTS asset_metadata (
+                id VARCHAR PRIMARY KEY,
+                asset_id VARCHAR NOT NULL UNIQUE,
+                omni_id VARCHAR,
+                tenant_id VARCHAR,
+                engine_name VARCHAR,
+                engine_version VARCHAR,
+                extractor VARCHAR,
+                exiftool_available BOOLEAN,
+                supported BOOLEAN,
+                raw_metadata_json TEXT,
+                normalized_metadata_json TEXT,
+                derived_metadata_json TEXT,
+                warnings_json TEXT,
+                metadata_sha256 VARCHAR,
+                extraction_duration_ms FLOAT,
+                analyzed_at TIMESTAMP,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """,
+            [
+                "CREATE INDEX IF NOT EXISTS ix_asset_metadata_asset_id ON asset_metadata (asset_id)",
+                "CREATE INDEX IF NOT EXISTS ix_asset_metadata_omni_id ON asset_metadata (omni_id)",
+                "CREATE INDEX IF NOT EXISTS ix_asset_metadata_tenant_id ON asset_metadata (tenant_id)",
+                "CREATE INDEX IF NOT EXISTS ix_asset_metadata_metadata_sha256 ON asset_metadata (metadata_sha256)",
+            ],
+        ),
+    ]
+
     with engine.connect() as conn:
         inspector = inspect(conn)
         existing_tables = set(inspector.get_table_names())
@@ -132,5 +171,13 @@ def _run_migrations():
                     text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
                 )
                 print(f"Migration applied: {table}.{column}")
+
+        for table, create_sql, index_sqls in table_creations:
+            created = table not in existing_tables
+            conn.execute(text(create_sql))
+            for index_sql in index_sqls:
+                conn.execute(text(index_sql))
+            if created:
+                print(f"Migration applied: created table {table}")
 
         conn.commit()

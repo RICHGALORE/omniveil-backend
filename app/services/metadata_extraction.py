@@ -34,6 +34,13 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("omniveil.metadata")
 
+# ── Engine identity ───────────────────────────────────────────────────────────
+# Single source of truth for the Metadata Intelligence engine name and version.
+# Every persisted metadata record stamps these values; do not duplicate the
+# literals elsewhere — import them from here.
+ENGINE_NAME = "Omni Veil Metadata Intelligence"
+ENGINE_VERSION = "1.0.0"
+
 # ── Supported file types ────────────────────────────────────────────────────
 # Extension -> canonical mime type. Used for classification and to decide
 # whether a file is "supported" for rich extraction.
