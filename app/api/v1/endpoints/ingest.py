@@ -9,7 +9,11 @@ from app.utils.hashing import sha256_bytes, blake3_bytes, phash_image, generate_
 from app.utils.watermark import apply_visible_watermark, apply_invisible_watermark
 from app.utils.metadata import extract_metadata
 from app.services.metadata_extraction import extract_metadata_service
-from app.services.metadata_persistence import persist_asset_metadata
+from app.services.metadata_persistence import (
+    persist_asset_metadata,
+    persist_anomaly_score,
+    split_layers,
+)
 from app.utils.security import hash_event, sign_certificate as legacy_hmac_sign_certificate, compute_manifest_hash
 from app.services.crypto_signing import get_or_create_dev_trust_keypair, sign_certificate as ed25519_sign_certificate
 from app.services.trust import TrustSignals, compute_trust_score
@@ -424,12 +428,22 @@ async def ingest_upload(
         extraction = extract_metadata_service(
             data, filename=original_filename, mime_type=mime_type
         )
-        persist_asset_metadata(
+        record = persist_asset_metadata(
             db,
             asset_id=asset_id,
             tenant_id=tenant.tenant_id,
             omni_id=omni_id,
             extraction=extraction,
+        )
+        # Commit 4: compute + persist the deterministic anomaly score from the
+        # layers we just persisted. Runs after persistence so an anomaly failure
+        # can never roll back the metadata or the upload; the upload response
+        # shape is unchanged (anomaly data is served by the /anomalies endpoint).
+        raw, normalized, derived = split_layers(extraction)
+        persist_anomaly_score(
+            db, record,
+            raw=raw, normalized=normalized, derived=derived,
+            mime_type=mime_type,
         )
     except Exception as exc:  # never break the upload on metadata persistence
         logger.warning(

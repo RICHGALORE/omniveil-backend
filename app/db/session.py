@@ -123,6 +123,12 @@ def _run_migrations():
         ("asset_metadata", "metadata_score_breakdown_json", "TEXT"),
         ("asset_metadata", "metadata_score_engine_version", "VARCHAR"),
         ("asset_metadata", "metadata_scored_at", "TIMESTAMP"),
+
+        # asset_metadata — Metadata Anomaly Intelligence (Commit 4)
+        ("asset_metadata", "anomaly_score", "INTEGER"),
+        ("asset_metadata", "anomaly_flags_json", "TEXT"),
+        ("asset_metadata", "anomaly_engine_version", "TEXT"),
+        ("asset_metadata", "anomaly_scored_at", "TIMESTAMP"),
     ]
 
     # ── New-table creations (additive, idempotent) ────────────────────────────
@@ -154,6 +160,10 @@ def _run_migrations():
                 metadata_score_breakdown_json TEXT,
                 metadata_score_engine_version VARCHAR,
                 metadata_scored_at TIMESTAMP,
+                anomaly_score INTEGER,
+                anomaly_flags_json TEXT,
+                anomaly_engine_version TEXT,
+                anomaly_scored_at TIMESTAMP,
                 analyzed_at TIMESTAMP,
                 created_at TIMESTAMP,
                 updated_at TIMESTAMP

@@ -17,6 +17,7 @@ from app.services.metadata_persistence import (
     get_metadata_by_omni_id,
     serialize_record,
     ensure_trust_score,
+    ensure_anomaly_score,
 )
 
 router = APIRouter(prefix="/metadata", tags=["metadata"])
@@ -109,4 +110,35 @@ def get_asset_trust_score(
         "explanations": score["explanations"],
         "engine_version": score["engine_version"],
         "analyzed_at": score["scored_at"],
+    }
+
+
+@router.get("/assets/{omni_id}/anomalies")
+def get_asset_anomalies(
+    omni_id: str,
+    tenant: Client = Depends(resolve_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the deterministic metadata anomaly flags for ``omni_id``
+    (tenant-isolated).
+
+    The anomaly score (0–100) and flags are derived purely from the persisted
+    metadata layers by an explainable rule engine — no uploaded bytes are
+    re-read and no AI is involved. Flags are computed and stored at upload time;
+    this endpoint returns the stored result, lazily computing and persisting it
+    once for any record that predates the anomaly engine. 404 if no record
+    exists for this tenant.
+    """
+    record = get_metadata_by_omni_id(db, omni_id, tenant_id=tenant.tenant_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Metadata not found")
+    result = ensure_anomaly_score(db, record)
+    return {
+        "omni_id": record.omni_id,
+        "anomaly_score": result["anomaly_score"],
+        "flags": result["flags"],
+        "anomaly_summary": result["anomaly_summary"],
+        "engine_version": result["engine_version"],
+        "analyzed_at": result["scored_at"],
     }

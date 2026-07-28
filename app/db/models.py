@@ -256,6 +256,16 @@ class AssetMetadata(Base):
     metadata_score_engine_version = Column(String, nullable=True)
     metadata_scored_at = Column(DateTime, nullable=True)
 
+    # ── Metadata Anomaly Intelligence (Commit 4) ───────────────────────────────
+    # Deterministic 0–100 anomaly score plus a JSON list of flag dicts, computed
+    # from the persisted metadata layers by the rule-based anomaly engine. Higher
+    # score = more / more severe structural anomalies. Stamped with the anomaly
+    # engine version and the timestamp at which the flags were computed.
+    anomaly_score = Column(Integer, nullable=True)                 # 0–100
+    anomaly_flags_json = Column(Text, nullable=True)               # [{flag, ...}, ...]
+    anomaly_engine_version = Column(Text, nullable=True)
+    anomaly_scored_at = Column(DateTime, nullable=True)
+
     analyzed_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

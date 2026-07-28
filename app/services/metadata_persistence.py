@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.db.models import AssetMetadata
 from app.services.metadata_extraction import ENGINE_NAME, ENGINE_VERSION
 from app.services.metadata_trust_score import compute_metadata_trust_score
+from app.services.metadata_anomaly import compute_metadata_anomaly_score
 
 logger = logging.getLogger("omniveil.metadata.persistence")
 
@@ -299,3 +300,97 @@ def ensure_trust_score(db: Session, record: AssetMetadata,
     if include_explanations:
         payload["explanations"] = score["explanations"]
     return payload
+
+
+# ── Metadata Anomaly Intelligence (Commit 4) ──────────────────────────────────
+
+def _mime_for_anomaly(normalized: Dict[str, Any]) -> Optional[str]:
+    """Best-effort MIME for anomaly rules that are MIME-gated."""
+    for section in ("file", "container"):
+        sec = normalized.get(section) if isinstance(normalized, dict) else None
+        if isinstance(sec, dict):
+            for key in ("mime_type", "mime"):
+                v = sec.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+    return None
+
+
+def persist_anomaly_score(db: Session, record: AssetMetadata, *,
+                          raw: dict, normalized: dict, derived: dict,
+                          mime_type: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Compute the deterministic anomaly score from the already-persisted layers
+    and store it on ``record``. Called from the upload pipeline AFTER
+    ``persist_asset_metadata`` — a failure here never rolls back the metadata or
+    the upload. Same metadata -> same flags -> same score.
+    """
+    result = compute_metadata_anomaly_score(
+        raw=raw, normalized=normalized, derived=derived,
+        mime_type=mime_type or _mime_for_anomaly(normalized))
+    now = datetime.utcnow()
+    try:
+        record.anomaly_score = result["anomaly_score"]
+        record.anomaly_flags_json = _canonical_json(result["flags"])
+        record.anomaly_engine_version = result["engine_version"]
+        record.anomaly_scored_at = now
+        db.commit()
+        db.refresh(record)
+    except Exception as exc:
+        db.rollback()
+        logger.error("Anomaly-score persist failed for asset_id=%s: %s",
+                     record.asset_id, exc)
+    return result
+
+
+def ensure_anomaly_score(db: Session, record: AssetMetadata) -> Dict[str, Any]:
+    """
+    Return the anomaly payload for a persisted record.
+
+    Fast path: if the record was already scored (normal for uploads made after
+    Commit 4), return the stored flags/score. Lazy path: for a record persisted
+    before Commit 4, compute from the stored JSON layers, persist, and return.
+    Deterministic and idempotent either way.
+    """
+    if record.anomaly_score is not None and record.anomaly_flags_json is not None:
+        flags = _safe_load(record.anomaly_flags_json, [])
+        if flags:
+            listed = ", ".join(f"{f['flag']} ({f['severity']})" for f in flags)
+            summary = f"{len(flags)} anomaly flag(s) detected: {listed}."
+        else:
+            summary = "No anomalies detected."
+        return {
+            "anomaly_score": record.anomaly_score,
+            "flags": flags,
+            "anomaly_summary": summary,
+            "engine_version": record.anomaly_engine_version,
+            "scored_at": (record.anomaly_scored_at.isoformat()
+                          if record.anomaly_scored_at else None),
+        }
+
+    # Lazy compute from stored layers.
+    normalized = _safe_load(record.normalized_metadata_json, {})
+    raw = _safe_load(record.raw_metadata_json, {})
+    derived = _safe_load(record.derived_metadata_json, {})
+    result = compute_metadata_anomaly_score(
+        raw=raw, normalized=normalized, derived=derived,
+        mime_type=_mime_for_anomaly(normalized))
+    now = datetime.utcnow()
+    try:
+        record.anomaly_score = result["anomaly_score"]
+        record.anomaly_flags_json = _canonical_json(result["flags"])
+        record.anomaly_engine_version = result["engine_version"]
+        record.anomaly_scored_at = now
+        db.commit()
+        db.refresh(record)
+    except Exception as exc:
+        db.rollback()
+        logger.error("Lazy anomaly-score persist failed for asset_id=%s: %s",
+                     record.asset_id, exc)
+    return {
+        "anomaly_score": result["anomaly_score"],
+        "flags": result["flags"],
+        "anomaly_summary": result["anomaly_summary"],
+        "engine_version": result["engine_version"],
+        "scored_at": now.isoformat(),
+    }
