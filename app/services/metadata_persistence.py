@@ -235,7 +235,8 @@ def serialize_record(record: AssetMetadata) -> Dict[str, Any]:
     }
 
 
-def ensure_trust_score(db: Session, record: AssetMetadata) -> Dict[str, Any]:
+def ensure_trust_score(db: Session, record: AssetMetadata,
+                       include_explanations: bool = False) -> Dict[str, Any]:
     """
     Return the trust-score payload for a persisted record.
 
@@ -243,15 +244,33 @@ def ensure_trust_score(db: Session, record: AssetMetadata) -> Dict[str, Any]:
     Commit 3), return the stored score. Lazy path: for a legacy record persisted
     before Commit 3, compute the score from the stored JSON layers, persist it,
     and return it. Deterministic and idempotent either way.
+
+    When ``include_explanations`` is True, the per-factor human-readable
+    explanations are recomputed from the stored metadata layers and attached
+    under ``explanations``. Because scoring is a pure, deterministic function of
+    those layers, the recomputed explanations always match the stored
+    ``breakdown`` / ``overall``; nothing extra is persisted for them.
     """
+    def _with_explanations(payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not include_explanations:
+            return payload
+        normalized = _safe_load(record.normalized_metadata_json, {})
+        raw = _safe_load(record.raw_metadata_json, {})
+        derived = _safe_load(record.derived_metadata_json, {})
+        full = compute_metadata_trust_score(raw=raw, normalized=normalized,
+                                            derived=derived)
+        payload = dict(payload)
+        payload["explanations"] = full["explanations"]
+        return payload
+
     if record.metadata_trust_score is not None and record.metadata_score_breakdown_json:
-        return {
+        return _with_explanations({
             "overall": record.metadata_trust_score,
             "breakdown": _safe_load(record.metadata_score_breakdown_json, {}),
             "engine_version": record.metadata_score_engine_version,
             "scored_at": (record.metadata_scored_at.isoformat()
                           if record.metadata_scored_at else None),
-        }
+        })
 
     # Lazy compute from stored layers.
     normalized = _safe_load(record.normalized_metadata_json, {})
@@ -271,9 +290,12 @@ def ensure_trust_score(db: Session, record: AssetMetadata) -> Dict[str, Any]:
         db.rollback()
         logger.error("Lazy trust-score persist failed for asset_id=%s: %s",
                      record.asset_id, exc)
-    return {
+    payload = {
         "overall": score["overall"],
         "breakdown": score["breakdown"],
         "engine_version": score["engine_version"],
         "scored_at": now.isoformat(),
     }
+    if include_explanations:
+        payload["explanations"] = score["explanations"]
+    return payload
