@@ -36,6 +36,14 @@ async def _detect_synthetic(data: bytes, mime_type: str) -> float | None:
     return None
 
 
+def _detector_identity(score: float | None) -> tuple[str | None, str | None]:
+    """Identify the evidence provider only when a detector result exists."""
+    if score is None:
+        return None, None
+    metadata = hive.detector_metadata()
+    return metadata.get("provider"), metadata.get("model")
+
+
 def _read_temp_c2pa(data: bytes, filename: str | None) -> dict:
     suffix = Path(filename or "asset").suffix[:12]
     temp_path = None
@@ -75,12 +83,15 @@ async def scan_asset(
         mime_type=mime_type,
     )
     ai_score = await _detect_synthetic(data, mime_type)
+    detector_provider, detector_model = _detector_identity(ai_score)
     c2pa = _read_temp_c2pa(data, file.filename)
 
     report = build_omnispectra_report(
         filename=file.filename,
         sha256=(normalized.get("hashes") or {}).get("sha256"),
         ai_detection_score=ai_score,
+        detector_provider=detector_provider,
+        detector_model=detector_model,
         anomaly=anomaly,
         c2pa=c2pa,
     )
@@ -123,12 +134,15 @@ def get_registered_spectra_report(
         }
 
     humanproof = get_public_humanproof_summary(db, omni_id)
+    detector_provider, detector_model = _detector_identity(asset.ai_detection_score)
 
     report = build_omnispectra_report(
         omni_id=asset.omni_id,
         filename=asset.filename,
         sha256=asset.sha256,
         ai_detection_score=asset.ai_detection_score,
+        detector_provider=detector_provider,
+        detector_model=detector_model,
         anomaly=anomaly,
         c2pa=c2pa,
         watermark_applied=asset.watermark_applied,
