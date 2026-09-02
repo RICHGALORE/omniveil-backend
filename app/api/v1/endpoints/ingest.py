@@ -20,7 +20,14 @@ from app.services.trust import TrustSignals, compute_trust_score
 from app.services.copyright_readiness import AuthorshipSignals, compute_copyright_readiness
 from app.services.certificate import CertificateContext, build_certificate
 from app.utils import hive
-from app.db import get_db, save_asset, ProvenanceEvent, Certificate
+from app.db import (
+    get_db,
+    save_asset,
+    ProvenanceEvent,
+    Certificate,
+    Contributor,
+    LiveSplitSession,
+)
 from app.db.models import Client
 
 router = APIRouter()
@@ -36,8 +43,10 @@ MANIFESTS_DIR = "uploads/manifests"
 for _dir in (ORIGINALS_DIR, WATERMARKED_DIR, CERTIFICATES_DIR, MANIFESTS_DIR):
     os.makedirs(_dir, exist_ok=True)
 
-hive.set_key(settings.omni_api_key)
-hive.set_sightengine("1158794285", "7NBWjGaZYhTfbV6S4dawgLJxHZMu2ytA")
+if settings.hive_api_key:
+    hive.set_key(settings.hive_api_key)
+if settings.sightengine_user and settings.sightengine_secret:
+    hive.set_sightengine(settings.sightengine_user, settings.sightengine_secret)
 
 
 def _provenance_event(omni_id, event_type, description, tool_used, actor, now):
@@ -77,8 +86,14 @@ async def ingest_upload(
     if len(data) > settings.max_upload_mb * 1024 * 1024:
         raise HTTPException(413, "File too large")
 
-    provenance = json.loads(provenance_json or "{}")
-    options = json.loads(options_json or "{}")
+    try:
+        provenance = json.loads(provenance_json or "{}")
+        options = json.loads(options_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid JSON form data: {exc.msg}") from exc
+
+    if not isinstance(provenance, dict) or not isinstance(options, dict):
+        raise HTTPException(400, "provenance_json and options_json must be JSON objects")
 
     # ── Step 2: Hashes ──────────────────────────────────────────────────────
     sha256 = sha256_bytes(data)
@@ -183,8 +198,67 @@ async def ingest_upload(
 
     # ── Live Split / contributor metadata from provenance ─────────────────────
     live_split = provenance.get("live_split") or {}
+    if not isinstance(live_split, dict):
+        raise HTTPException(400, "live_split must be a JSON object")
     contributors = live_split.get("contributors") or provenance.get("contributors") or []
     section_c_ownership_splits = provenance.get("section_c_ownership_splits") or {}
+
+    if not isinstance(contributors, list):
+        raise HTTPException(400, "contributors must be a JSON array")
+
+    normalized_contributors = []
+    for index, contributor in enumerate(contributors, start=1):
+        if not isinstance(contributor, dict):
+            raise HTTPException(400, f"Contributor {index} must be a JSON object")
+
+        name = str(
+            contributor.get("name") or contributor.get("contributor_name") or ""
+        ).strip()
+        if not name:
+            raise HTTPException(400, f"Contributor {index} requires a name")
+
+        def _percentage(key: str, fallback: str | None = None):
+            value = contributor.get(key)
+            if value is None and fallback:
+                value = contributor.get(fallback)
+            if value in (None, ""):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    400, f"Contributor {index} has an invalid {key}"
+                ) from exc
+            if number < 0 or number > 100:
+                raise HTTPException(400, f"Contributor {index} {key} must be 0-100")
+            return number
+
+        normalized_contributors.append({
+            **contributor,
+            "name": name,
+            "role": str(contributor.get("role") or "Contributor").strip(),
+            "contribution_type": contributor.get("contribution_type") or (
+                "ai" if contributor.get("isAI") else "human"
+            ),
+            "creative_contribution_pct": _percentage("creative_contribution_pct"),
+            "ownership_split_pct": _percentage(
+                "ownership_split_pct", "split_percentage"
+            ),
+            "ai_assisted_pct": _percentage("ai_assisted_pct"),
+        })
+
+    contributors = normalized_contributors
+
+    if contributors:
+        declared_ownership = [
+            contributor["ownership_split_pct"]
+            for contributor in contributors
+            if contributor["ownership_split_pct"] is not None
+        ]
+        if len(declared_ownership) != len(contributors):
+            raise HTTPException(400, "Every contributor requires an ownership split")
+        if abs(sum(declared_ownership) - 100.0) > 0.01:
+            raise HTTPException(400, "Contributor ownership splits must total 100%")
 
     if contributors and contributor_count is None:
         contributor_count = len(contributors)
@@ -342,6 +416,7 @@ async def ingest_upload(
     save_asset(db, {
         "omni_id": omni_id,
         "asset_id": asset_id,
+        "tenant_id": tenant.tenant_id,
         "filename": original_filename,
         "mime_type": mime_type,
         "original_path": original_path,
@@ -376,6 +451,8 @@ async def ingest_upload(
         # ── Copyright readiness ──────────────────────────────────────────────
         "copyright_readiness_score": cr.score,
         "copyright_readiness_label": cr.label,
+        "certificate_class": cr.certificate_class,
+        "certificate_class_label": cert_payload["certificate_class_label"],
         "ai_disclosure_complete": ai_disclosure_complete,
         "ai_tools_used_json": json.dumps(ai_tools_used) if ai_tools_used else None,
         "ai_modification_by_human": ai_modification_by_human,
@@ -394,6 +471,38 @@ async def ingest_upload(
         cert_json=cert_json_str,
         signature=cert_payload["signature"],
     ))
+
+    for contributor in contributors:
+        db.add(Contributor(
+            contributor_id=str(uuid.uuid4()),
+            omni_id=omni_id,
+            contributor_name=contributor["name"],
+            role=contributor["role"],
+            contribution_type=contributor["contribution_type"],
+            split_percentage=contributor["ownership_split_pct"],
+            creative_contribution_pct=contributor["creative_contribution_pct"],
+            ownership_split_pct=contributor["ownership_split_pct"],
+            ai_assisted_pct=contributor["ai_assisted_pct"],
+            wallet_address=contributor.get("wallet_address"),
+        ))
+
+    if live_split:
+        contributors_json = json.dumps(contributors, sort_keys=True)
+        db.add(LiveSplitSession(
+            session_id=str(uuid.uuid4()),
+            omni_id=omni_id,
+            tenant_id=tenant.tenant_id,
+            session_name=str(
+                live_split.get("session_name")
+                or provenance.get("asset_title")
+                or original_filename
+            ),
+            status="locked",
+            contributors_json=contributors_json,
+            created_at=now,
+            locked_at=now,
+            session_hash=sha256_bytes(contributors_json.encode()),
+        ))
 
     # ── Provenance events (immutable audit trail) ────────────────────────────
     actor = creator_name or "system"
@@ -453,6 +562,7 @@ async def ingest_upload(
     return {
         "omni_id": omni_id,
         "asset_id": asset_id,
+        "cert_id": cert_id,
         "filename": original_filename,
         "sha256": sha256,
         "blake3": b3,

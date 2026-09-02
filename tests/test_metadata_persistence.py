@@ -374,12 +374,12 @@ def test_13_missing_optional_metadata_persists():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  14  Upload response shape unchanged
+#  14  Upload response shape includes the issued certificate identity
 # ══════════════════════════════════════════════════════════════════════════════
 
-# The exact top-level keys the upload endpoint returned BEFORE Commit 2.
+# The exact top-level keys returned by the completed trust-package upload.
 _EXPECTED_UPLOAD_KEYS = {
-    "omni_id", "asset_id", "filename", "sha256", "blake3", "phash",
+    "omni_id", "asset_id", "cert_id", "filename", "sha256", "blake3", "phash",
     "trust_score", "content_label", "label_reasons", "ai_detection_score",
     "ai_disclosure", "watermark_applied", "watermark_visible",
     "watermark_invisible", "creator_name", "copyright_owner", "license_type",

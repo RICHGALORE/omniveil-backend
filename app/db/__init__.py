@@ -28,6 +28,7 @@ def save_asset(db, data: dict) -> Asset:
     asset = Asset(
         omni_id=data["omni_id"],
         asset_id=data.get("asset_id", ""),
+        tenant_id=data.get("tenant_id"),
         filename=data.get("filename", data.get("original_filename", "")),
         file_type=data.get("mime_type", "application/octet-stream"),
         original_path=data.get("original_path", ""),
@@ -63,6 +64,8 @@ def save_asset(db, data: dict) -> Asset:
         # ── Copyright Readiness ────────────────────────────────────────────────
         copyright_readiness_score=data.get("copyright_readiness_score"),
         copyright_readiness_label=data.get("copyright_readiness_label"),
+        certificate_class=data.get("certificate_class"),
+        certificate_class_label=data.get("certificate_class_label"),
         ai_disclosure_complete=data.get("ai_disclosure_complete"),
         ai_tools_used_json=data.get("ai_tools_used_json"),
         ai_modification_by_human=data.get("ai_modification_by_human"),
@@ -73,9 +76,15 @@ def save_asset(db, data: dict) -> Asset:
     return asset
 
 
-def get_asset(db, omni_id: str) -> Asset | None:
-    return db.query(Asset).filter(Asset.omni_id == omni_id).first()
+def get_asset(db, omni_id: str, tenant_id: str | None = None) -> Asset | None:
+    query = db.query(Asset).filter(Asset.omni_id == omni_id)
+    if tenant_id is not None:
+        query = query.filter(Asset.tenant_id == tenant_id)
+    return query.first()
 
 
-def get_all_assets(db, limit: int = 50) -> list[Asset]:
-    return db.query(Asset).order_by(Asset.created_at.desc()).limit(limit).all()
+def get_all_assets(db, limit: int = 50, tenant_id: str | None = None) -> list[Asset]:
+    query = db.query(Asset)
+    if tenant_id is not None:
+        query = query.filter(Asset.tenant_id == tenant_id)
+    return query.order_by(Asset.created_at.desc()).limit(limit).all()

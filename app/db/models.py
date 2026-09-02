@@ -12,6 +12,7 @@ class Asset(Base):
 
     omni_id = Column(String, primary_key=True, index=True)
     asset_id = Column(String, unique=True, index=True)
+    tenant_id = Column(String, nullable=True, index=True)
 
     # File identity
     filename = Column(String, nullable=False, default="")
@@ -168,6 +169,7 @@ class LiveSplitSession(Base):
 
     session_id = Column(String, primary_key=True, index=True)
     omni_id = Column(String, ForeignKey("assets.omni_id"), nullable=True, index=True)
+    tenant_id = Column(String, nullable=True, index=True)
 
     session_name = Column(String, nullable=False)
     status = Column(String, nullable=False, default="open")  # "open" | "locked" | "finalized"

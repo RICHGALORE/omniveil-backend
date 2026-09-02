@@ -200,4 +200,22 @@ def _run_migrations():
             if created:
                 print(f"Migration applied: created table {table}")
 
+        # All records created before tenant support belonged to the founder's
+        # demo tenant. Preserve those records without exposing them to future
+        # tenants. This only runs when that tenant already exists.
+        demo_tenant_id = os.getenv("DEMO_TENANT_ID", "demo-tenant")
+        if {"assets", "clients"}.issubset(existing_tables):
+            demo_exists = conn.execute(
+                text("SELECT 1 FROM clients WHERE tenant_id = :tenant_id LIMIT 1"),
+                {"tenant_id": demo_tenant_id},
+            ).fetchone()
+            if demo_exists:
+                conn.execute(
+                    text(
+                        "UPDATE assets SET tenant_id = :tenant_id "
+                        "WHERE tenant_id IS NULL OR tenant_id = ''"
+                    ),
+                    {"tenant_id": demo_tenant_id},
+                )
+
         conn.commit()

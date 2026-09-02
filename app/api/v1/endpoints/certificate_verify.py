@@ -1,25 +1,39 @@
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Depends
+from sqlalchemy.orm import Session
 from pathlib import Path
 from typing import Any, Dict
 import json
 
 from app.services.crypto_signing import verify_certificate_signature
+from app.db.models import Certificate
+from app.db.session import get_db
 
 router = APIRouter()
 
 CERTIFICATES_DIR = Path("uploads/certificates")
 
 
-def _load_certificate_by_omni_id(omni_id: str) -> Dict[str, Any]:
+def _load_certificate_by_omni_id(omni_id: str, db: Session) -> Dict[str, Any]:
     certificate_path = CERTIFICATES_DIR / f"{omni_id}.json"
 
-    if not certificate_path.exists():
-        raise HTTPException(status_code=404, detail="Certificate not found")
+    if certificate_path.exists():
+        try:
+            return json.loads(certificate_path.read_text())
+        except Exception:
+            pass
 
+    certificate = (
+        db.query(Certificate)
+        .filter(Certificate.omni_id == omni_id)
+        .order_by(Certificate.issued_at.desc())
+        .first()
+    )
+    if not certificate:
+        raise HTTPException(status_code=404, detail="Certificate not found")
     try:
-        return json.loads(certificate_path.read_text())
-    except Exception:
-        raise HTTPException(status_code=500, detail="Certificate file is unreadable")
+        return json.loads(certificate.cert_json)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=500, detail="Certificate record is unreadable") from exc
 
 
 def _verify_signed_certificate(certificate: Dict[str, Any]) -> Dict[str, Any]:
@@ -52,8 +66,11 @@ def _verify_signed_certificate(certificate: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.get("/certificates/{omni_id}/verify")
-async def verify_certificate_by_omni_id(omni_id: str):
-    certificate = _load_certificate_by_omni_id(omni_id)
+async def verify_certificate_by_omni_id(
+    omni_id: str,
+    db: Session = Depends(get_db),
+):
+    certificate = _load_certificate_by_omni_id(omni_id, db)
     return _verify_signed_certificate(certificate)
 
 

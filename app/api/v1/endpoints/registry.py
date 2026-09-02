@@ -6,7 +6,7 @@ import mimetypes
 
 from app.core.tenant import resolve_tenant
 from app.db.session import get_db
-from app.db.models import Client
+from app.db.models import Certificate, Client
 from app.db import get_asset, get_all_assets
 from app.services.copyright_report import generate_copyright_readiness_report
 from app.services.export_package import build_export_package
@@ -20,7 +20,7 @@ def list_assets(
     tenant: Client = Depends(resolve_tenant),
     db: Session = Depends(get_db),
 ):
-    assets = get_all_assets(db, limit)
+    assets = get_all_assets(db, limit, tenant.tenant_id)
     return {
         "items": [
             {
@@ -32,6 +32,8 @@ def list_assets(
                 "content_label": a.content_label,
                 "creator_name": a.creator_name,
                 "ai_disclosure": a.ai_disclosure,
+                "certificate_class": a.certificate_class,
+                "certificate_class_label": a.certificate_class_label,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
                 "total_verifications": a.total_verifications,
             }
@@ -75,10 +77,6 @@ def get_public_registry_asset(
         "creator_name": asset.creator_name,
         "copyright_owner": asset.copyright_owner,
         "license_type": asset.license_type,
-        "original_path": asset.original_path,
-        "watermarked_path": asset.watermarked_path,
-        "certificate_path": asset.certificate_path,
-        "manifest_path": asset.manifest_path,
         "registry_url": asset.registry_url,
         "created_at": asset.created_at.isoformat() if asset.created_at else None,
         "file_size_bytes": asset.file_size_bytes,
@@ -99,7 +97,7 @@ def get_report(
     tenant: Client = Depends(resolve_tenant),
     db: Session = Depends(get_db),
 ):
-    asset = get_asset(db, omni_id)
+    asset = get_asset(db, omni_id, tenant.tenant_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
 
@@ -178,7 +176,7 @@ def export_copyright_package(
     Omni Veil provides provenance and authorship documentation infrastructure.
     Final copyright determinations are made by the applicable copyright authority.
     """
-    asset = get_asset(db, omni_id)
+    asset = get_asset(db, omni_id, tenant.tenant_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
 
@@ -210,7 +208,7 @@ def get_copyright_report(
     Omni Veil provides provenance and authorship documentation infrastructure.
     Final copyright determinations are made by the applicable copyright authority.
     """
-    asset = get_asset(db, omni_id)
+    asset = get_asset(db, omni_id, tenant.tenant_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
 
@@ -223,7 +221,7 @@ def get_asset_info(
     tenant: Client = Depends(resolve_tenant),
     db: Session = Depends(get_db),
 ):
-    asset = get_asset(db, omni_id)
+    asset = get_asset(db, omni_id, tenant.tenant_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
     return {
@@ -236,3 +234,91 @@ def get_asset_info(
         "creator_name": asset.creator_name,
         "created_at": asset.created_at.isoformat() if asset.created_at else None,
     }
+
+
+def _certificate_item(certificate: Certificate) -> dict:
+    asset = certificate.asset
+    try:
+        payload = json.loads(certificate.cert_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+
+    return {
+        "cert_id": certificate.cert_id,
+        "omni_id": certificate.omni_id,
+        "filename": asset.filename if asset else None,
+        "subject_name": certificate.subject_name,
+        "issuer": certificate.issuer,
+        "certificate_class": certificate.certificate_class,
+        "certificate_class_label": payload.get("certificate_class_label"),
+        "trust_score": asset.trust_score if asset else None,
+        "content_label": asset.content_label if asset else None,
+        "issued_at": certificate.issued_at.isoformat() if certificate.issued_at else None,
+        "certificate_hash": certificate.certificate_hash,
+        "signature_algorithm": payload.get("signature_algorithm"),
+        "public_key_id": payload.get("public_key_id"),
+    }
+
+
+@router.get("/certificates")
+def list_certificates(
+    limit: int = 50,
+    tenant: Client = Depends(resolve_tenant),
+    db: Session = Depends(get_db),
+):
+    certificates = (
+        db.query(Certificate)
+        .join(Certificate.asset)
+        .filter(Certificate.asset.has(tenant_id=tenant.tenant_id))
+        .order_by(Certificate.issued_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "items": [_certificate_item(certificate) for certificate in certificates],
+        "total": len(certificates),
+    }
+
+
+@router.get("/certificates/{cert_id}")
+def get_certificate(
+    cert_id: str,
+    tenant: Client = Depends(resolve_tenant),
+    db: Session = Depends(get_db),
+):
+    certificate = (
+        db.query(Certificate)
+        .join(Certificate.asset)
+        .filter(
+            Certificate.cert_id == cert_id,
+            Certificate.asset.has(tenant_id=tenant.tenant_id),
+        )
+        .first()
+    )
+    if not certificate:
+        raise HTTPException(404, "Certificate not found")
+
+    item = _certificate_item(certificate)
+    try:
+        payload = json.loads(certificate.cert_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+
+    asset = certificate.asset
+    item.update({
+        "certificate": payload,
+        "asset": {
+            "omni_id": asset.omni_id,
+            "filename": asset.filename,
+            "asset_type": asset.asset_type,
+            "creator_name": asset.creator_name,
+            "copyright_owner": asset.copyright_owner,
+            "license_type": asset.license_type,
+            "sha256": asset.sha256,
+            "blake3": asset.blake3,
+            "trust_score": asset.trust_score,
+            "content_label": asset.content_label,
+            "created_at": asset.created_at.isoformat() if asset.created_at else None,
+        },
+    })
+    return item
