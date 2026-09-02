@@ -1,6 +1,8 @@
 import base64
 import hashlib
+import hmac
 import json
+import os
 from typing import Any, Dict
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -23,6 +25,7 @@ SIGNATURE_FIELDS = {
     "legacy_hmac_signature",
 }
 
+
 def canonical_json(data: Dict[str, Any]) -> bytes:
     return json.dumps(
         data,
@@ -31,8 +34,10 @@ def canonical_json(data: Dict[str, Any]) -> bytes:
         ensure_ascii=False,
     ).encode("utf-8")
 
+
 def metadata_hash(metadata: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(metadata)).hexdigest()
+
 
 def certificate_hash(certificate: Dict[str, Any]) -> str:
     unsigned = {
@@ -41,6 +46,7 @@ def certificate_hash(certificate: Dict[str, Any]) -> str:
         if key not in SIGNATURE_FIELDS
     }
     return hashlib.sha256(canonical_json(unsigned)).hexdigest()
+
 
 def generate_ed25519_keypair() -> Dict[str, str]:
     private_key = Ed25519PrivateKey.generate()
@@ -62,15 +68,18 @@ def generate_ed25519_keypair() -> Dict[str, str]:
         "public_key_b64": base64.b64encode(public_bytes).decode("utf-8"),
     }
 
+
 def load_private_key(private_key_b64: str) -> Ed25519PrivateKey:
     return Ed25519PrivateKey.from_private_bytes(
         base64.b64decode(private_key_b64)
     )
 
+
 def load_public_key(public_key_b64: str) -> Ed25519PublicKey:
     return Ed25519PublicKey.from_public_bytes(
         base64.b64decode(public_key_b64)
     )
+
 
 def sign_certificate(
     certificate: Dict[str, Any],
@@ -98,6 +107,7 @@ def sign_certificate(
     signed["public_key_id"] = public_key_id
 
     return signed
+
 
 def verify_certificate_signature(
     certificate: Dict[str, Any],
@@ -148,7 +158,7 @@ def get_or_create_dev_trust_keypair(path: str = ".secrets/ov_root_dev_keypair.js
     Development-only persistent root keypair.
 
     This prevents a new signing key from being generated on every upload.
-    Production must replace this with AWS KMS / AWS Secrets Manager / offline vault.
+    Production must never call this path.
     """
     from pathlib import Path
 
@@ -161,3 +171,79 @@ def get_or_create_dev_trust_keypair(path: str = ".secrets/ov_root_dev_keypair.js
     keys = generate_ed25519_keypair()
     key_path.write_text(json.dumps(keys, indent=2))
     return keys
+
+
+def _derived_public_key_b64(private_key_b64: str) -> str:
+    private_key = load_private_key(private_key_b64)
+    public_bytes = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return base64.b64encode(public_bytes).decode("utf-8")
+
+
+def get_trust_signing_material(environment: str | None = None) -> Dict[str, str]:
+    """Return the Trust Authority signing material for the current environment.
+
+    Development/test keeps the persistent local dev root for reproducible
+    verification. Production fails closed unless an explicit Ed25519 keypair is
+    provided through secret environment variables, and it verifies that the
+    configured public key actually belongs to the configured private key.
+
+    Real production values must live in Render secret configuration (or a KMS /
+    secret manager), never in Git.
+    """
+    env = (
+        environment
+        or os.getenv("ENVIRONMENT")
+        or os.getenv("APP_ENV")
+        or "development"
+    ).strip().lower()
+
+    if env != "production":
+        keys = get_or_create_dev_trust_keypair()
+        return {
+            **keys,
+            "public_key_id": "OV-ROOT-DEV-001",
+            "environment": env,
+        }
+
+    private_key_b64 = os.getenv("OV_SIGNING_PRIVATE_KEY_B64", "").strip()
+    public_key_b64 = os.getenv("OV_SIGNING_PUBLIC_KEY_B64", "").strip()
+    public_key_id = os.getenv("OV_SIGNING_KEY_ID", "").strip()
+
+    missing = [
+        name
+        for name, value in (
+            ("OV_SIGNING_PRIVATE_KEY_B64", private_key_b64),
+            ("OV_SIGNING_PUBLIC_KEY_B64", public_key_b64),
+            ("OV_SIGNING_KEY_ID", public_key_id),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "Production certificate signing is not configured; missing: "
+            + ", ".join(missing)
+        )
+
+    try:
+        # Validate both encodings/lengths before comparing the keypair.
+        load_public_key(public_key_b64)
+        derived_public = _derived_public_key_b64(private_key_b64)
+    except Exception as exc:
+        raise RuntimeError(
+            "Production certificate signing key material is invalid."
+        ) from exc
+
+    if not hmac.compare_digest(derived_public, public_key_b64):
+        raise RuntimeError(
+            "Production certificate signing public/private keys do not match."
+        )
+
+    return {
+        "private_key_b64": private_key_b64,
+        "public_key_b64": public_key_b64,
+        "public_key_id": public_key_id,
+        "environment": "production",
+    }
