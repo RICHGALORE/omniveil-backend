@@ -66,7 +66,7 @@ def test_c2pa_reader_normalizes_active_manifest_and_actions(monkeypatch, tmp_pat
     assert result["actions"] == ["c2pa.created", "c2pa.edited"]
     assert result["validation_state"] == "no_reported_errors"
     assert result["validation_error_count"] == 0
-    assert "proof of human authorship" not in result["evidence_note"].lower()
+    assert "not standalone proof of human authorship" in result["evidence_note"].lower()
 
 
 def test_c2pa_reader_preserves_validation_failure_as_evidence(monkeypatch, tmp_path):
