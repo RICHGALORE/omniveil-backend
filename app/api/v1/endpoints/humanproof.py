@@ -198,4 +198,12 @@ def get_public_humanproof_summary(
     )
     if not session:
         raise HTTPException(404, "HumanProof record not found")
-    return serialize_session(db, session, public=True)
+
+    summary = serialize_session(db, session, public=True)
+    for event in summary["events"]:
+        # Public HumanProof exposes cryptographic continuity and safe disclosure
+        # summaries, not the creator's raw workflow evidence.
+        event.pop("payload", None)
+        event.pop("source_name", None)
+        event.pop("creator_id", None)
+    return summary
