@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.utils.hashing import sha256_bytes, blake3_bytes, phash_image, generate_omni_id
 from app.utils.watermark import apply_visible_watermark, apply_invisible_watermark
 from app.utils.metadata import extract_metadata
+from app.utils.upload_limits import read_upload_limited
 from app.services.metadata_extraction import extract_metadata_service
 from app.services.metadata_persistence import (
     persist_asset_metadata,
@@ -82,9 +83,7 @@ async def ingest_upload(
     tenant: Client = Depends(resolve_tenant),
     db: Session = Depends(get_db),
 ):
-    data = await file.read()
-    if len(data) > settings.max_upload_mb * 1024 * 1024:
-        raise HTTPException(413, "File too large")
+    data = await read_upload_limited(file, max_mb=settings.max_upload_mb)
 
     try:
         provenance = json.loads(provenance_json or "{}")

@@ -5,11 +5,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.tenant import resolve_tenant
 from app.db import get_asset
 from app.db.models import Client
 from app.db.session import get_db
 from app.services.c2pa_intelligence import read_c2pa_path
+from app.utils.upload_limits import read_upload_limited
 
 
 router = APIRouter(prefix="/c2pa", tags=["C2PA"])
@@ -22,7 +24,7 @@ async def read_uploaded_c2pa(
 ):
     """Read/validate Content Credentials without registering the uploaded file."""
     del tenant  # authentication gate; C2PA result itself is tenant-independent
-    data = await file.read()
+    data = await read_upload_limited(file, max_mb=settings.max_upload_mb)
     suffix = Path(file.filename or "asset").suffix[:12]
     temp_path = None
     try:

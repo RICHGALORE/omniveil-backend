@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.tenant import resolve_tenant
 from app.db import get_asset
 from app.db.models import Client
@@ -20,6 +21,7 @@ from app.services.metadata_persistence import (
 )
 from app.services.omnispectra import build_omnispectra_report
 from app.utils import hive
+from app.utils.upload_limits import read_upload_limited
 
 
 router = APIRouter(prefix="/spectra", tags=["OmniSpectra"])
@@ -67,7 +69,7 @@ async def scan_asset(
 ):
     """Run an authenticated ad-hoc OmniSpectra scan without registering the file."""
     del tenant
-    data = await file.read()
+    data = await read_upload_limited(file, max_mb=settings.max_upload_mb)
     mime_type = file.content_type or "application/octet-stream"
 
     extraction = extract_metadata_service(
