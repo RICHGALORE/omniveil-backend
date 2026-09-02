@@ -120,6 +120,9 @@ def test_c2pa_reader_handles_manifest_not_found(monkeypatch, tmp_path):
 
 
 def _ensure_client(raw_key: str) -> None:
+    # This helper runs before TestClient enters the FastAPI lifespan, so create
+    # the schema explicitly instead of depending on test ordering.
+    main.init_db()
     db = SessionLocal()
     try:
         db.add(
