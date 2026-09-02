@@ -5,7 +5,13 @@ from datetime import datetime
 
 from app.db.models import Client
 
-SEED_DEMO_CLIENT = os.getenv("SEED_DEMO_CLIENT", "true").lower() == "true"
+ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("APP_ENV", "development")).lower()
+_seed_setting = os.getenv("SEED_DEMO_CLIENT")
+SEED_DEMO_CLIENT = (
+    _seed_setting.lower() == "true"
+    if _seed_setting is not None
+    else ENVIRONMENT != "production"
+)
 DEMO_TENANT_ID = os.getenv("DEMO_TENANT_ID", "demo-tenant")
 DEMO_CLIENT_ID = os.getenv("DEMO_CLIENT_ID", "acb8b49e-0095-421a-a9bb-26ecabe7e62e")
 
@@ -37,7 +43,15 @@ def seed_demo_client(db):
         )
         return existing
 
-    raw_key = os.getenv("DEMO_API_KEY") or secrets.token_urlsafe(32)
+    raw_key = os.getenv("DEMO_API_KEY")
+    generated_key = False
+    if not raw_key:
+        if ENVIRONMENT == "production":
+            raise RuntimeError(
+                "DEMO_API_KEY is required when demo seeding is enabled in production"
+            )
+        raw_key = secrets.token_urlsafe(32)
+        generated_key = True
     key_hash = _hash_api_key(raw_key)
 
     demo = Client(
@@ -57,11 +71,11 @@ def seed_demo_client(db):
     db.commit()
     db.refresh(demo)
 
-    print(
-        f"Seed: Demo tenant created "
-        f"(id={demo.id}, tenant_id={demo.tenant_id}). "
-        "Save the API key shown below; it will not be shown again."
-    )
-    print(f"Seed: Demo API key = {raw_key}")
+    print(f"Seed: Demo tenant created (id={demo.id}, tenant_id={demo.tenant_id}).")
+    if generated_key:
+        print(
+            "Seed: A development-only demo API key was generated. "
+            "Set DEMO_API_KEY explicitly when a stable local key is required."
+        )
 
     return demo
