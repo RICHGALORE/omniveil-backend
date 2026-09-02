@@ -117,6 +117,65 @@ def _run_migrations():
 
         # live split sessions — tenant support
         ("live_split_sessions", "tenant_id", "VARCHAR"),
+
+        # asset_metadata — Metadata Trust Score (Commit 3)
+        ("asset_metadata", "metadata_trust_score", "INTEGER"),
+        ("asset_metadata", "metadata_score_breakdown_json", "TEXT"),
+        ("asset_metadata", "metadata_score_engine_version", "VARCHAR"),
+        ("asset_metadata", "metadata_scored_at", "TIMESTAMP"),
+
+        # asset_metadata — Metadata Anomaly Intelligence (Commit 4)
+        ("asset_metadata", "anomaly_score", "INTEGER"),
+        ("asset_metadata", "anomaly_flags_json", "TEXT"),
+        ("asset_metadata", "anomaly_engine_version", "TEXT"),
+        ("asset_metadata", "anomaly_scored_at", "TIMESTAMP"),
+    ]
+
+    # ── New-table creations (additive, idempotent) ────────────────────────────
+    # Base.metadata.create_all() already creates these from the ORM models; the
+    # statements below are an explicit, idempotent safety net so the schema is
+    # guaranteed even if create_all is bypassed. CREATE TABLE/INDEX IF NOT EXISTS
+    # is supported by both SQLite (dev) and PostgreSQL (production).
+    table_creations = [
+        (
+            "asset_metadata",
+            """
+            CREATE TABLE IF NOT EXISTS asset_metadata (
+                id VARCHAR PRIMARY KEY,
+                asset_id VARCHAR NOT NULL UNIQUE,
+                omni_id VARCHAR,
+                tenant_id VARCHAR,
+                engine_name VARCHAR,
+                engine_version VARCHAR,
+                extractor VARCHAR,
+                exiftool_available BOOLEAN,
+                supported BOOLEAN,
+                raw_metadata_json TEXT,
+                normalized_metadata_json TEXT,
+                derived_metadata_json TEXT,
+                warnings_json TEXT,
+                metadata_sha256 VARCHAR,
+                extraction_duration_ms FLOAT,
+                metadata_trust_score INTEGER,
+                metadata_score_breakdown_json TEXT,
+                metadata_score_engine_version VARCHAR,
+                metadata_scored_at TIMESTAMP,
+                anomaly_score INTEGER,
+                anomaly_flags_json TEXT,
+                anomaly_engine_version TEXT,
+                anomaly_scored_at TIMESTAMP,
+                analyzed_at TIMESTAMP,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """,
+            [
+                "CREATE INDEX IF NOT EXISTS ix_asset_metadata_asset_id ON asset_metadata (asset_id)",
+                "CREATE INDEX IF NOT EXISTS ix_asset_metadata_omni_id ON asset_metadata (omni_id)",
+                "CREATE INDEX IF NOT EXISTS ix_asset_metadata_tenant_id ON asset_metadata (tenant_id)",
+                "CREATE INDEX IF NOT EXISTS ix_asset_metadata_metadata_sha256 ON asset_metadata (metadata_sha256)",
+            ],
+        ),
     ]
 
     with engine.connect() as conn:
@@ -132,5 +191,31 @@ def _run_migrations():
                     text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
                 )
                 print(f"Migration applied: {table}.{column}")
+
+        for table, create_sql, index_sqls in table_creations:
+            created = table not in existing_tables
+            conn.execute(text(create_sql))
+            for index_sql in index_sqls:
+                conn.execute(text(index_sql))
+            if created:
+                print(f"Migration applied: created table {table}")
+
+        # All records created before tenant support belonged to the founder's
+        # demo tenant. Preserve those records without exposing them to future
+        # tenants. This only runs when that tenant already exists.
+        demo_tenant_id = os.getenv("DEMO_TENANT_ID", "demo-tenant")
+        if {"assets", "clients"}.issubset(existing_tables):
+            demo_exists = conn.execute(
+                text("SELECT 1 FROM clients WHERE tenant_id = :tenant_id LIMIT 1"),
+                {"tenant_id": demo_tenant_id},
+            ).fetchone()
+            if demo_exists:
+                conn.execute(
+                    text(
+                        "UPDATE assets SET tenant_id = :tenant_id "
+                        "WHERE tenant_id IS NULL OR tenant_id = ''"
+                    ),
+                    {"tenant_id": demo_tenant_id},
+                )
 
         conn.commit()

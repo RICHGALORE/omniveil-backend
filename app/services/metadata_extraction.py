@@ -34,6 +34,13 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("omniveil.metadata")
 
+# ── Engine identity ───────────────────────────────────────────────────────────
+# Single source of truth for the Metadata Intelligence engine name and version.
+# Every persisted metadata record stamps these values; do not duplicate the
+# literals elsewhere — import them from here.
+ENGINE_NAME = "Omni Veil Metadata Intelligence"
+ENGINE_VERSION = "1.0.0"
+
 # ── Supported file types ────────────────────────────────────────────────────
 # Extension -> canonical mime type. Used for classification and to decide
 # whether a file is "supported" for rich extraction.
@@ -489,11 +496,20 @@ def _normalize_container(lower, ext, mime) -> Dict[str, Any]:
 
 
 def _normalize_timestamps(lower) -> Dict[str, Any]:
+    # NOTE: exifread emits space-separated group keys ("EXIF DateTimeOriginal",
+    # "Image DateTime"); the ExifTool -G path emits colon-separated keys
+    # ("EXIF:DateTimeOriginal"). The space-form candidates below are required so
+    # the pure-Python (exifread) fallback populates timestamps — otherwise these
+    # values are present in raw metadata but silently lost during normalization.
+    # This mirrors the existing "image make" precedent in _normalize_camera.
     return {
-        "created": _first(lower, "createdate", "datetimeoriginal", "creationdate", "/creationdate"),
-        "modified": _first(lower, "modifydate", "filemodifydate", "/moddate"),
+        "created": _first(lower, "createdate", "datetimeoriginal",
+                          "exif datetimeoriginal", "creationdate", "/creationdate"),
+        "modified": _first(lower, "modifydate", "image datetime",
+                           "filemodifydate", "/moddate"),
         "encoded": _first(lower, "encodetime", "mediacreatedate"),
-        "digitized": _first(lower, "datetimedigitized", "digitalcreationdatetime"),
+        "digitized": _first(lower, "datetimedigitized", "exif datetimedigitized",
+                            "digitalcreationdatetime"),
         "timezone": _first(lower, "timezone", "offsettime", "offsettimeoriginal"),
     }
 

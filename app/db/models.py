@@ -12,6 +12,7 @@ class Asset(Base):
 
     omni_id = Column(String, primary_key=True, index=True)
     asset_id = Column(String, unique=True, index=True)
+    tenant_id = Column(String, nullable=True, index=True)
 
     # File identity
     filename = Column(String, nullable=False, default="")
@@ -168,6 +169,7 @@ class LiveSplitSession(Base):
 
     session_id = Column(String, primary_key=True, index=True)
     omni_id = Column(String, ForeignKey("assets.omni_id"), nullable=True, index=True)
+    tenant_id = Column(String, nullable=True, index=True)
 
     session_name = Column(String, nullable=False)
     status = Column(String, nullable=False, default="open")  # "open" | "locked" | "finalized"
@@ -200,6 +202,75 @@ class VerificationLog(Base):
     log_hash = Column(String, nullable=False)
 
     asset = relationship("Asset", back_populates="verification_logs")
+
+
+class AssetMetadata(Base):
+    """
+    Durable, per-asset metadata record produced by the Metadata Intelligence
+    engine (Commit 2 — persistence only).
+
+    One primary record per asset. Three JSON layers are stored side-by-side:
+      * raw_metadata_json        — exact extractor output where practical
+      * normalized_metadata_json — canonical Omni Veil sections
+      * derived_metadata_json    — values computed by Omni Veil (engine identity,
+                                    extractor flags, warnings, timing, sha256)
+
+    This table does not modify or replace the legacy ``assets.metadata_json``
+    blob; it is an additional dedicated persistence layer.
+    """
+    __tablename__ = "asset_metadata"
+
+    id = Column(String, primary_key=True, index=True)
+
+    # Asset linkage. asset_id is unique -> enforces one metadata record per asset.
+    asset_id = Column(
+        String, ForeignKey("assets.asset_id"), unique=True, index=True, nullable=False
+    )
+    omni_id = Column(String, ForeignKey("assets.omni_id"), index=True, nullable=True)
+    tenant_id = Column(String, index=True, nullable=True)
+
+    # Engine identity (stamped from central constants).
+    engine_name = Column(String, nullable=True)
+    engine_version = Column(String, nullable=True)
+
+    # Extractor envelope.
+    extractor = Column(String, nullable=True)
+    exiftool_available = Column(Boolean, nullable=True)
+    supported = Column(Boolean, nullable=True)
+
+    # Three durable JSON layers.
+    raw_metadata_json = Column(Text, nullable=True)
+    normalized_metadata_json = Column(Text, nullable=True)
+    derived_metadata_json = Column(Text, nullable=True)
+    warnings_json = Column(Text, nullable=True)
+
+    # Deterministic SHA-256 over the canonical normalized metadata.
+    metadata_sha256 = Column(String, index=True, nullable=True)
+
+    extraction_duration_ms = Column(Float, nullable=True)
+
+    # ── Metadata Trust Score (Commit 3) ────────────────────────────────────────
+    # Deterministic 0–100 score computed from the persisted metadata layers, with
+    # a JSON breakdown of the weighted factors. Stamped with the scoring engine
+    # version and the timestamp at which the score was computed.
+    metadata_trust_score = Column(Integer, nullable=True)          # 0–100
+    metadata_score_breakdown_json = Column(Text, nullable=True)    # {"completeness": .., ...}
+    metadata_score_engine_version = Column(String, nullable=True)
+    metadata_scored_at = Column(DateTime, nullable=True)
+
+    # ── Metadata Anomaly Intelligence (Commit 4) ───────────────────────────────
+    # Deterministic 0–100 anomaly score plus a JSON list of flag dicts, computed
+    # from the persisted metadata layers by the rule-based anomaly engine. Higher
+    # score = more / more severe structural anomalies. Stamped with the anomaly
+    # engine version and the timestamp at which the flags were computed.
+    anomaly_score = Column(Integer, nullable=True)                 # 0–100
+    anomaly_flags_json = Column(Text, nullable=True)               # [{flag, ...}, ...]
+    anomaly_engine_version = Column(Text, nullable=True)
+    anomaly_scored_at = Column(DateTime, nullable=True)
+
+    analyzed_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Client(Base):
