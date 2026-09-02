@@ -5,6 +5,7 @@ import json, uuid
 
 from app.db import get_db, get_asset, VerificationLog
 from app.db.models import Asset
+from app.services.humanproof_public import get_public_humanproof_summary
 from app.utils.hashing import sha256_bytes, blake3_bytes
 from app.utils.security import verify_file_hashes, detect_provenance_mismatch, hash_log_entry
 
@@ -94,6 +95,7 @@ async def verify_file(
         "content_label": asset.content_label,
         "creator_name": asset.creator_name,
         "created_at": asset.created_at.isoformat() if asset.created_at else None,
+        "humanproof": get_public_humanproof_summary(db, asset.omni_id),
         "message": (
             "Asset verified in Omni Veil registry."
             if hash_result["verified"]
@@ -137,6 +139,7 @@ async def verify_hash(
         "content_label": asset.content_label,
         "creator_name": asset.creator_name,
         "created_at": asset.created_at.isoformat() if asset.created_at else None,
+        "humanproof": get_public_humanproof_summary(db, asset.omni_id),
         "message": "Asset verified in Omni Veil registry.",
     }
 
@@ -209,5 +212,6 @@ async def verify_omni_id(
         "total_verifications": asset.total_verifications,
         "created_at": asset.created_at.isoformat() if asset.created_at else None,
         "registry_url": asset.registry_url,
+        "humanproof": get_public_humanproof_summary(db, asset.omni_id),
         "message": "Asset verified in Omni Veil registry.",
     }

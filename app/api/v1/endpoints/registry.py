@@ -10,6 +10,7 @@ from app.db.models import Certificate, Client
 from app.db import get_asset, get_all_assets
 from app.services.copyright_report import generate_copyright_readiness_report
 from app.services.export_package import build_export_package
+from app.services.humanproof_public import get_public_humanproof_summary
 
 router = APIRouter()
 
@@ -41,7 +42,6 @@ def list_assets(
         ],
         "total": len(assets),
     }
-
 
 
 @router.get("/registry/assets/{omni_id}")
@@ -87,6 +87,7 @@ def get_public_registry_asset(
             "label": asset.copyright_readiness_label,
             "certificate_class": asset.certificate_class,
         },
+        "humanproof": get_public_humanproof_summary(db, asset.omni_id),
         "legal_disclaimer": "Omni Veil provides provenance and authorship documentation infrastructure. Final copyright determinations are made by the applicable copyright authority.",
     }
 
@@ -140,6 +141,7 @@ def get_report(
         "total_verifications": asset.total_verifications,
         "created_at": asset.created_at.isoformat() if asset.created_at else None,
         "registry_url": asset.registry_url,
+        "humanproof": get_public_humanproof_summary(db, asset.omni_id),
         # ── Copyright readiness ──────────────────────────────────────────────
         "copyright_readiness_score": asset.copyright_readiness_score,
         "copyright_readiness_label": asset.copyright_readiness_label,
@@ -233,6 +235,7 @@ def get_asset_info(
         "ai_disclosure": asset.ai_disclosure,
         "creator_name": asset.creator_name,
         "created_at": asset.created_at.isoformat() if asset.created_at else None,
+        "humanproof": get_public_humanproof_summary(db, asset.omni_id),
     }
 
 
@@ -320,5 +323,6 @@ def get_certificate(
             "content_label": asset.content_label,
             "created_at": asset.created_at.isoformat() if asset.created_at else None,
         },
+        "humanproof": get_public_humanproof_summary(db, asset.omni_id),
     })
     return item
