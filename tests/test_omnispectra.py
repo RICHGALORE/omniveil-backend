@@ -40,15 +40,19 @@ def test_c2pa_absence_is_neutral_not_suspicious():
     assert report["verdict"] == "no_major_flags"
 
 
-def test_high_synthetic_probability_is_flagged_without_claiming_certainty():
+def test_high_synthetic_probability_is_flagged_with_provider_without_claiming_certainty():
     report = build_omnispectra_report(
         filename="clip.wav",
         ai_detection_score=0.91,
+        detector_provider="sightengine",
+        detector_model="genai",
         anomaly={"anomaly_score": 0, "flags": [], "anomaly_summary": "No anomalies detected."},
     )
     signal = report["signals"]["synthetic_detection"]
     assert signal["risk"] == "high"
     assert signal["probability_pct"] == 91.0
+    assert signal["provider"] == "sightengine"
+    assert signal["model"] == "genai"
     assert report["verdict"] == "high_review_priority"
     assert "does not independently prove" in signal["note"]
 
@@ -129,6 +133,9 @@ def test_ad_hoc_spectra_scan_requires_auth_and_returns_real_signal_shape(monkeyp
         assert body["engine"] == "Omni Veil OmniSpectra"
         assert body["scan_mode"] == "ad_hoc"
         assert body["sha256"] == "a" * 64
-        assert body["signals"]["synthetic_detection"]["probability"] == 0.12
+        synthetic = body["signals"]["synthetic_detection"]
+        assert synthetic["probability"] == 0.12
+        assert synthetic["provider"] == "sightengine"
+        assert synthetic["model"] == "genai"
         assert body["signals"]["content_credentials"]["risk"] == "neutral"
         assert body["signals"]["metadata_anomalies"]["anomaly_score"] == 15
