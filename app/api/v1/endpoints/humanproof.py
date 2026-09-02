@@ -122,6 +122,10 @@ def add_humanproof_event(
 ):
     if body.event_type not in ALLOWED_EVENT_TYPES:
         raise HTTPException(400, "Unsupported HumanProof event type")
+    if body.event_type == "ai_tool_disclosed":
+        if not isinstance(body.ai_disclosure, dict) or not isinstance(body.ai_disclosure.get("used"), bool):
+            raise HTTPException(400, "AI disclosure requires explicit used: true or false")
+
     session = _tenant_session(db, session_id, tenant.tenant_id)
     try:
         append_event(
@@ -206,4 +210,13 @@ def get_public_humanproof_summary(
         event.pop("payload", None)
         event.pop("source_name", None)
         event.pop("creator_id", None)
+
+        location = event.get("location")
+        if location and location.get("level") == "coarse":
+            public_summary = location.get("public_summary")
+            event["location"] = (
+                {"level": "coarse", "public_summary": public_summary}
+                if public_summary
+                else {"level": "coarse"}
+            )
     return summary
