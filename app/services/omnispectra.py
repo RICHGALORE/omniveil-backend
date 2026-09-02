@@ -15,15 +15,22 @@ from typing import Any, Optional
 
 
 ENGINE_NAME = "Omni Veil OmniSpectra"
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.0.1"
 
 
-def _synthetic_signal(score: Optional[float]) -> dict:
+def _synthetic_signal(
+    score: Optional[float],
+    *,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict:
     if score is None:
         return {
             "available": False,
             "probability": None,
             "risk": "unknown",
+            "provider": provider,
+            "model": model,
             "note": "No synthetic-media detector result is available for this asset.",
         }
 
@@ -40,6 +47,8 @@ def _synthetic_signal(score: Optional[float]) -> dict:
         "probability": round(probability, 4),
         "probability_pct": round(probability * 100, 2),
         "risk": risk,
+        "provider": provider,
+        "model": model,
         "note": (
             "Model probability is one forensic signal. It does not independently prove "
             "that an asset is human-made or AI-generated."
@@ -202,6 +211,8 @@ def build_omnispectra_report(
     filename: Optional[str] = None,
     sha256: Optional[str] = None,
     ai_detection_score: Optional[float] = None,
+    detector_provider: Optional[str] = None,
+    detector_model: Optional[str] = None,
     anomaly: Optional[dict] = None,
     c2pa: Optional[dict] = None,
     watermark_applied: Optional[bool] = None,
@@ -211,7 +222,11 @@ def build_omnispectra_report(
 ) -> dict:
     signals = {
         "metadata_anomalies": _metadata_signal(anomaly),
-        "synthetic_detection": _synthetic_signal(ai_detection_score),
+        "synthetic_detection": _synthetic_signal(
+            ai_detection_score,
+            provider=detector_provider,
+            model=detector_model,
+        ),
         "content_credentials": _c2pa_signal(c2pa),
         "watermark": _watermark_signal(
             applied=watermark_applied,
