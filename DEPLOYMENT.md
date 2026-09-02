@@ -26,7 +26,10 @@ Build from the repository `Dockerfile`. The container:
 - runs Python 3.11 as an unprivileged user;
 - installs ExifTool for metadata extraction;
 - listens on Render's `PORT` value;
-- exposes `/health` as its container health check.
+- exposes `/health` for process liveness;
+- exposes `/ready` for dependency readiness.
+
+`/health` deliberately stays lightweight so infrastructure can tell whether the API process is alive even during a database/configuration incident. `/ready` is the stricter gate and checks database connectivity, writable upload storage, and production Trust Authority signing configuration. It returns HTTP `503` when any required dependency is unavailable and exposes only public-safe booleans, never credentials or secret details.
 
 ## Persistent storage
 
@@ -37,7 +40,7 @@ still require durable storage.
 
 ## Release check
 
-After deployment:
+After deployment, verify liveness first:
 
 ```bash
 curl https://omniveil-backend.onrender.com/health
@@ -47,6 +50,27 @@ Expected response:
 
 ```json
 {"status":"ok","version":"0.1.0","env":"production"}
+```
+
+Then verify the service is actually ready to accept Trust OS work:
+
+```bash
+curl -i https://omniveil-backend.onrender.com/ready
+```
+
+Expected production response after Postgres, persistent storage, and signing secrets are configured:
+
+```json
+{
+  "status": "ready",
+  "ready": true,
+  "environment": "production",
+  "checks": {
+    "database": true,
+    "storage": true,
+    "trust_signing": true
+  }
+}
 ```
 
 Before accepting uploads, issue one controlled certificate and verify that its `public_key_id` is the configured production key ID, never `OV-ROOT-DEV-001`.

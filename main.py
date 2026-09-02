@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -72,11 +73,19 @@ app.add_middleware(
 from app.api.v1.router import api_router
 from app.db.session import init_db, SessionLocal
 from app.db.seed import seed_demo_client
+from app.services.readiness import readiness_snapshot
 app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": "0.1.0", "env": os.getenv("ENVIRONMENT", os.getenv("APP_ENV", "development"))}
+
+@app.get("/ready")
+async def ready():
+    snapshot = readiness_snapshot()
+    if snapshot["ready"]:
+        return snapshot
+    return JSONResponse(status_code=503, content=snapshot)
 
 @app.get("/")
 async def root():
