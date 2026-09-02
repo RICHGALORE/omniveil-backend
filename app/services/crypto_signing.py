@@ -26,6 +26,14 @@ SIGNATURE_FIELDS = {
 }
 
 
+def _environment() -> str:
+    return (
+        os.getenv("ENVIRONMENT")
+        or os.getenv("APP_ENV")
+        or "development"
+    ).strip().lower()
+
+
 def canonical_json(data: Dict[str, Any]) -> bytes:
     return json.dumps(
         data,
@@ -99,12 +107,21 @@ def sign_certificate(
     private_key = load_private_key(private_key_b64)
     signature = private_key.sign(cert_hash.encode("utf-8"))
 
+    # The current ingest caller still passes the historical development key ID.
+    # Never allow that label to leak into a production certificate: production
+    # must use the explicitly configured Trust Authority key ID.
+    effective_key_id = public_key_id
+    if _environment() == "production" and public_key_id == "OV-ROOT-DEV-001":
+        effective_key_id = os.getenv("OV_SIGNING_KEY_ID", "").strip()
+        if not effective_key_id:
+            raise RuntimeError("Production certificate signing key ID is not configured.")
+
     signed = dict(certificate_with_metadata_lock)
     signed["signature_algorithm"] = "Ed25519"
     signed["certificate_hash"] = cert_hash
     signed["signature"] = base64.b64encode(signature).decode("utf-8")
     signed["public_key"] = public_key_b64
-    signed["public_key_id"] = public_key_id
+    signed["public_key_id"] = effective_key_id
 
     return signed
 
@@ -153,13 +170,10 @@ def verify_certificate_signature(
 # Omni Veil Trust Authority key management
 # ---------------------------------------------------------------------------
 
-def get_or_create_dev_trust_keypair(path: str = ".secrets/ov_root_dev_keypair.json") -> Dict[str, str]:
-    """
-    Development-only persistent root keypair.
-
-    This prevents a new signing key from being generated on every upload.
-    Production must never call this path.
-    """
+def _get_or_create_local_dev_keypair(
+    path: str = ".secrets/ov_root_dev_keypair.json",
+) -> Dict[str, str]:
+    """Persistent development-only root keypair."""
     from pathlib import Path
 
     key_path = Path(path)
@@ -182,26 +196,21 @@ def _derived_public_key_b64(private_key_b64: str) -> str:
     return base64.b64encode(public_bytes).decode("utf-8")
 
 
-def get_trust_signing_material(environment: str | None = None) -> Dict[str, str]:
-    """Return the Trust Authority signing material for the current environment.
+def get_trust_signing_material(
+    environment: str | None = None,
+    dev_path: str = ".secrets/ov_root_dev_keypair.json",
+) -> Dict[str, str]:
+    """Return validated Trust Authority signing material.
 
-    Development/test keeps the persistent local dev root for reproducible
-    verification. Production fails closed unless an explicit Ed25519 keypair is
-    provided through secret environment variables, and it verifies that the
-    configured public key actually belongs to the configured private key.
-
-    Real production values must live in Render secret configuration (or a KMS /
-    secret manager), never in Git.
+    Development/test uses a persistent local root. Production fails closed
+    unless an explicit Ed25519 keypair and key ID are provided via secrets, and
+    verifies that the configured public key belongs to the configured private
+    key. Production values must live in Render/KMS/secret storage, never Git.
     """
-    env = (
-        environment
-        or os.getenv("ENVIRONMENT")
-        or os.getenv("APP_ENV")
-        or "development"
-    ).strip().lower()
+    env = (environment or _environment()).strip().lower()
 
     if env != "production":
-        keys = get_or_create_dev_trust_keypair()
+        keys = _get_or_create_local_dev_keypair(dev_path)
         return {
             **keys,
             "public_key_id": "OV-ROOT-DEV-001",
@@ -228,7 +237,6 @@ def get_trust_signing_material(environment: str | None = None) -> Dict[str, str]
         )
 
     try:
-        # Validate both encodings/lengths before comparing the keypair.
         load_public_key(public_key_b64)
         derived_public = _derived_public_key_b64(private_key_b64)
     except Exception as exc:
@@ -246,4 +254,19 @@ def get_trust_signing_material(environment: str | None = None) -> Dict[str, str]
         "public_key_b64": public_key_b64,
         "public_key_id": public_key_id,
         "environment": "production",
+    }
+
+
+def get_or_create_dev_trust_keypair(
+    path: str = ".secrets/ov_root_dev_keypair.json",
+) -> Dict[str, str]:
+    """Backward-compatible ingest hook with production fail-closed behavior.
+
+    The name is historical. In production this function never creates or reads
+    a development key; it returns only validated configured production keys.
+    """
+    material = get_trust_signing_material(dev_path=path)
+    return {
+        "private_key_b64": material["private_key_b64"],
+        "public_key_b64": material["public_key_b64"],
     }
