@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.storage import resolve_stored_path
 from app.core.tenant import resolve_tenant
 from app.db import get_asset
 from app.db.models import Client
@@ -125,8 +126,9 @@ def get_registered_spectra_report(
             "engine_version": stored.get("engine_version"),
         }
 
-    if asset.original_path and Path(asset.original_path).exists():
-        c2pa = read_c2pa_path(asset.original_path)
+    source_path = resolve_stored_path(asset.original_path)
+    if source_path is not None and source_path.exists():
+        c2pa = read_c2pa_path(str(source_path))
     else:
         c2pa = {
             "manifest_present": None,
