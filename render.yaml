@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: omniveil-backend
+    runtime: docker
+    plan: 0.5c-512mb
+    dockerfilePath: ./Dockerfile
+    autoDeployTrigger: checksPass
+    healthCheckPath: /health
+    disk:
+      name: omniveil-uploads
+      mountPath: /app/uploads
+      sizeGB: 10
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: SEED_DEMO_CLIENT
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: omniveil-db
+          property: connectionString
+      - key: OV_SIGNING_SECRET
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false
+      - key: OV_SIGNING_PRIVATE_KEY_B64
+        sync: false
+      - key: OV_SIGNING_PUBLIC_KEY_B64
+        sync: false
+      - key: OV_SIGNING_KEY_ID
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: SIGHTENGINE_USER
+        sync: false
+      - key: SIGHTENGINE_SECRET
+        sync: false
+      - key: OV_RATE_LIMIT_UPLOAD
+        value: 20/minute
+      - key: OV_RATE_LIMIT_SPECTRA_SCAN
+        value: 30/minute
+      - key: OV_RATE_LIMIT_C2PA_READ
+        value: 30/minute
+
+databases:
+  - name: omniveil-db
+    plan: 0.1c-256mb
+    databaseName: omniveil
+    user: omniveil

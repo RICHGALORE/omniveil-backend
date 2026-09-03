@@ -2,7 +2,8 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    UPLOAD_DIR=/app/uploads
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y libimage-exiftool-perl \
@@ -17,7 +18,7 @@ RUN python -m pip install --upgrade pip \
 COPY . .
 
 RUN useradd --create-home --uid 10001 omniveil \
-    && mkdir -p uploads/originals uploads/watermarked uploads/certificates uploads/manifests \
+    && mkdir -p /app/uploads/originals /app/uploads/watermarked /app/uploads/certificates /app/uploads/manifests \
     && chown -R omniveil:omniveil /app
 
 USER omniveil
