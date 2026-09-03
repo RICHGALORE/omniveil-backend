@@ -7,10 +7,10 @@ exposing secret values or infrastructure details.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 from sqlalchemy import text
 
+from app.core.storage import ensure_upload_layout
 from app.db.session import SessionLocal
 from app.services.crypto_signing import get_trust_signing_material
 
@@ -29,8 +29,7 @@ def _database_ready() -> bool:
 
 
 def _storage_ready() -> bool:
-    base = Path(os.getenv("UPLOAD_DIR", "uploads"))
-    base.mkdir(parents=True, exist_ok=True)
+    base = ensure_upload_layout()["root"]
     probe = base / ".omniveil-readiness"
     try:
         probe.write_bytes(b"ready")
