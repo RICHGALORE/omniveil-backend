@@ -1,8 +1,8 @@
 """Omni Evidence Graph V1.
 
 The graph connects evidence about an asset without collapsing distinct evidence
-classes into a single truth claim. Creator declarations, rights claims,
-forensic observations, provenance events, certificates, contributor
+classes into a single truth claim. Creator declarations, rights claims and
+records, forensic observations, provenance events, certificates, contributor
 attributions, and HumanProof process evidence remain separately identifiable.
 """
 from __future__ import annotations
@@ -12,10 +12,17 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Asset, AssetMetadata, Certificate, Contributor, ProvenanceEvent
+from app.db.models import (
+    Asset,
+    AssetMetadata,
+    Certificate,
+    Contributor,
+    LiveSplitSession,
+    ProvenanceEvent,
+)
 
 
-GRAPH_VERSION = "1.0"
+GRAPH_VERSION = "1.1"
 
 
 def _loads(value: str | None, default):
@@ -42,6 +49,41 @@ def _node(node_id: str, node_type: str, evidence_class: str, data: dict[str, Any
 
 def _edge(source: str, target: str, relation: str) -> dict:
     return {"source": source, "target": target, "relation": relation}
+
+
+def _split_contributor_summary(value: Any) -> dict[str, Any] | None:
+    """Return the rights-relevant public-safe portion of a split contributor row."""
+    if not isinstance(value, dict):
+        return None
+
+    ownership = value.get("ownership_split_pct")
+    if ownership is None:
+        ownership = value.get("split_percentage")
+    if ownership is None:
+        ownership = value.get("split")
+
+    return {
+        "name": value.get("name") or value.get("contributor_name"),
+        "role": value.get("role"),
+        "contribution_type": value.get("contribution_type"),
+        "creative_contribution_pct": value.get("creative_contribution_pct"),
+        "ownership_split_pct": ownership,
+        "ai_assisted_pct": value.get("ai_assisted_pct"),
+    }
+
+
+def _numeric_total(values: list[Any]) -> float | None:
+    total = 0.0
+    found = False
+    for value in values:
+        if value is None or value == "":
+            continue
+        try:
+            total += float(value)
+            found = True
+        except (TypeError, ValueError):
+            continue
+    return round(total, 4) if found else None
 
 
 def build_evidence_graph(
@@ -100,6 +142,7 @@ def build_evidence_graph(
     )
     edges.append(_edge(declaration_id, asset_node_id, "declares_about"))
 
+    rights_id = None
     if asset.copyright_owner or asset.license_type:
         rights_id = f"rights:{asset.omni_id}"
         nodes.append(
@@ -123,6 +166,7 @@ def build_evidence_graph(
         .order_by(Contributor.added_at.asc())
         .all()
     )
+    contributor_nodes_by_name: dict[str, list[str]] = {}
     for contributor in contributors:
         node_id = f"contributor:{contributor.contributor_id}"
         nodes.append(
@@ -143,6 +187,67 @@ def build_evidence_graph(
             )
         )
         edges.append(_edge(node_id, asset_node_id, "attributed_to"))
+        if contributor.contributor_name:
+            contributor_nodes_by_name.setdefault(
+                contributor.contributor_name.strip().casefold(), []
+            ).append(node_id)
+
+    split_sessions = (
+        db.query(LiveSplitSession)
+        .filter(LiveSplitSession.omni_id == asset.omni_id)
+        .order_by(LiveSplitSession.created_at.asc())
+        .all()
+    )
+    for session in split_sessions:
+        node_id = f"rights-record:live-split:{session.session_id}"
+        raw_contributors = _loads(session.contributors_json, [])
+        if not isinstance(raw_contributors, list):
+            raw_contributors = []
+        split_contributors = [
+            summary
+            for item in raw_contributors
+            if (summary := _split_contributor_summary(item)) is not None
+        ]
+        ownership_total = _numeric_total(
+            [item.get("ownership_split_pct") for item in split_contributors]
+        )
+
+        nodes.append(
+            _node(
+                node_id,
+                "live_split_record",
+                "rights_record",
+                {
+                    "session_id": session.session_id,
+                    "session_name": session.session_name,
+                    "status": session.status,
+                    "created_at": _iso(session.created_at),
+                    "locked_at": _iso(session.locked_at),
+                    "session_hash": session.session_hash,
+                    "contributor_count": len(split_contributors),
+                    "ownership_total_pct": ownership_total,
+                    "contributors": split_contributors,
+                    "integrity": {
+                        "locked_or_finalized": session.status in {"locked", "finalized"},
+                        "session_hash_present": bool(session.session_hash),
+                    },
+                },
+            )
+        )
+        edges.append(_edge(node_id, asset_node_id, "records_rights_for"))
+        if rights_id:
+            edges.append(_edge(node_id, rights_id, "documents_declared_rights"))
+
+        for split_contributor in split_contributors:
+            name = split_contributor.get("name")
+            if not name:
+                continue
+            for contributor_node_id in contributor_nodes_by_name.get(
+                str(name).strip().casefold(), []
+            ):
+                edges.append(
+                    _edge(contributor_node_id, node_id, "included_in_rights_record")
+                )
 
     certificates = (
         db.query(Certificate)
@@ -277,9 +382,9 @@ def build_evidence_graph(
             "separation_of_evidence": True,
             "no_single_source_of_truth_claim": True,
             "note": (
-                "Declarations, forensic observations, rights claims, certificates, "
-                "attributions, provenance events, and creation-process evidence remain "
-                "separate evidence classes and may corroborate or conflict."
+                "Declarations, forensic observations, rights claims and records, "
+                "certificates, attributions, provenance events, and creation-process "
+                "evidence remain separate evidence classes and may corroborate or conflict."
             ),
         },
     }

@@ -6,7 +6,14 @@ from fastapi.testclient import TestClient
 import main
 from app.api.v1.endpoints import evidence as evidence_endpoint
 from app.core.tenant import hash_api_key
-from app.db.models import Asset, Certificate, Client, Contributor, ProvenanceEvent
+from app.db.models import (
+    Asset,
+    Certificate,
+    Client,
+    Contributor,
+    LiveSplitSession,
+    ProvenanceEvent,
+)
 from app.db.session import SessionLocal
 
 
@@ -68,6 +75,28 @@ def _create_asset_bundle(tenant_id: str) -> str:
                 creative_contribution_pct=100.0,
                 ownership_split_pct=100.0,
                 ai_assisted_pct=0.0,
+            )
+        )
+        split_contributors = [
+            {
+                "name": "Evidence Creator",
+                "role": "producer",
+                "contribution_type": "human",
+                "creative_contribution_pct": 100.0,
+                "ownership_split_pct": 100.0,
+                "ai_assisted_pct": 0.0,
+                "wallet_address": "private-wallet-not-for-graph",
+            }
+        ]
+        db.add(
+            LiveSplitSession(
+                session_id=f"split-{token}",
+                omni_id=omni_id,
+                tenant_id=tenant_id,
+                session_name="Evidence Master Split",
+                status="locked",
+                contributors_json=json.dumps(split_contributors),
+                session_hash="e" * 64,
             )
         )
         db.add(
@@ -136,7 +165,7 @@ def test_evidence_graph_keeps_evidence_classes_separate_and_is_tenant_scoped(mon
         assert response.status_code == 200, response.text
         graph = response.json()
 
-        assert graph["graph_version"] == "1.0"
+        assert graph["graph_version"] == "1.1"
         assert graph["root_node_id"] == f"asset:{omni_id}"
         assert graph["principles"]["separation_of_evidence"] is True
         assert graph["principles"]["no_single_source_of_truth_claim"] is True
@@ -146,6 +175,7 @@ def test_evidence_graph_keeps_evidence_classes_separate_and_is_tenant_scoped(mon
             "cryptographic_identity",
             "declaration",
             "rights_claim",
+            "rights_record",
             "attribution",
             "certificate_attestation",
             "provenance",
@@ -154,9 +184,29 @@ def test_evidence_graph_keeps_evidence_classes_separate_and_is_tenant_scoped(mon
 
         declaration = next(node for node in graph["nodes"] if node["type"] == "creator_declaration")
         rights = next(node for node in graph["nodes"] if node["type"] == "rights_claim")
+        rights_record = next(node for node in graph["nodes"] if node["type"] == "live_split_record")
+        contributor = next(node for node in graph["nodes"] if node["type"] == "contributor")
+
         assert declaration["id"] != rights["id"]
+        assert rights["id"] != rights_record["id"]
         assert declaration["data"]["ai_disclosure"] == "human"
         assert rights["data"]["copyright_owner"] == "Evidence Rights LLC"
+        assert rights_record["data"]["status"] == "locked"
+        assert rights_record["data"]["ownership_total_pct"] == 100.0
+        assert rights_record["data"]["integrity"]["locked_or_finalized"] is True
+        assert rights_record["data"]["integrity"]["session_hash_present"] is True
+        assert rights_record["data"]["contributors"][0]["name"] == "Evidence Creator"
+
+        assert {
+            "source": contributor["id"],
+            "target": rights_record["id"],
+            "relation": "included_in_rights_record",
+        } in graph["edges"]
+        assert {
+            "source": rights_record["id"],
+            "target": rights["id"],
+            "relation": "documents_declared_rights",
+        } in graph["edges"]
 
         certificate = next(node for node in graph["nodes"] if node["type"] == "certificate")
         assert certificate["data"]["signature_algorithm"] == "Ed25519"
@@ -166,6 +216,7 @@ def test_evidence_graph_keeps_evidence_classes_separate_and_is_tenant_scoped(mon
         serialized = json.dumps(graph)
         assert "tenant_id" not in serialized
         assert "private-signature-material-not-for-graph" not in serialized
+        assert "private-wallet-not-for-graph" not in serialized
 
         denied = client.get(
             f"/api/v1/evidence/assets/{omni_id}",
