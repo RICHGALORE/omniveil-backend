@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Body, Depends
+from pathlib import Path
 from sqlalchemy.orm import Session
 from typing import Any, Dict
 import json
@@ -10,9 +11,19 @@ from app.db.session import get_db
 
 router = APIRouter()
 
+# Backward-compatible override used by tests and any legacy integrations.
+# When unset, resolve the active persistent certificate directory at call time.
+CERTIFICATES_DIR: Path | None = None
+
+
+def _certificate_dir() -> Path:
+    if CERTIFICATES_DIR is not None:
+        return Path(CERTIFICATES_DIR)
+    return ensure_upload_layout()["certificates"]
+
 
 def _load_certificate_by_omni_id(omni_id: str, db: Session) -> Dict[str, Any]:
-    certificate_path = ensure_upload_layout()["certificates"] / f"{omni_id}.json"
+    certificate_path = _certificate_dir() / f"{omni_id}.json"
 
     if certificate_path.exists():
         try:
