@@ -22,9 +22,9 @@ services:
           name: omniveil-db
           property: connectionString
       - key: OV_SIGNING_SECRET
-        sync: false
+        generateValue: true
       - key: ADMIN_API_KEY
-        sync: false
+        generateValue: true
       - key: OV_SIGNING_PRIVATE_KEY_B64
         sync: false
       - key: OV_SIGNING_PUBLIC_KEY_B64
