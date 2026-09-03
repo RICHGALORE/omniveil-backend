@@ -1,20 +1,18 @@
 from fastapi import APIRouter, HTTPException, Body, Depends
 from sqlalchemy.orm import Session
-from pathlib import Path
 from typing import Any, Dict
 import json
 
+from app.core.storage import ensure_upload_layout
 from app.services.crypto_signing import verify_certificate_signature
 from app.db.models import Certificate
 from app.db.session import get_db
 
 router = APIRouter()
 
-CERTIFICATES_DIR = Path("uploads/certificates")
-
 
 def _load_certificate_by_omni_id(omni_id: str, db: Session) -> Dict[str, Any]:
-    certificate_path = CERTIFICATES_DIR / f"{omni_id}.json"
+    certificate_path = ensure_upload_layout()["certificates"] / f"{omni_id}.json"
 
     if certificate_path.exists():
         try:
