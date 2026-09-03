@@ -11,7 +11,7 @@ import sys
 
 load_dotenv()
 
-from app.core.rate_limits import limiter
+from app.core.rate_limits import explicit_rate_limit_response, limiter
 
 
 @asynccontextmanager
@@ -39,6 +39,15 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def enforce_expensive_route_limits(request, call_next):
+    limited = explicit_rate_limit_response(request)
+    if limited is not None:
+        return limited
+    return await call_next(request)
+
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
