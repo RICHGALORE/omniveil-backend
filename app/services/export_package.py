@@ -10,11 +10,11 @@ REQUIRED LEGAL DISCLAIMER appears in every file in the package.
 
 import io
 import json
-import os
 import zipfile
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.core.storage import resolve_stored_path
 from app.services.copyright_report import generate_copyright_readiness_report
 from app.services.copyright_readiness import LEGAL_DISCLAIMER
 
@@ -107,10 +107,10 @@ def _get_certificate(asset) -> str:
         except (json.JSONDecodeError, TypeError):
             return certs[-1].cert_json or "{}"
 
-    # Fall back to file on disk if no DB record
-    if asset.certificate_path and os.path.exists(asset.certificate_path):
-        with open(asset.certificate_path) as fh:
-            return fh.read()
+    # Fall back to file on disk if no DB record.
+    certificate_path = resolve_stored_path(asset.certificate_path)
+    if certificate_path is not None and certificate_path.exists():
+        return certificate_path.read_text()
 
     return json.dumps({"error": "No certificate found", "omni_id": asset.omni_id,
                        "legal_disclaimer": LEGAL_DISCLAIMER}, indent=2)
@@ -118,9 +118,9 @@ def _get_certificate(asset) -> str:
 
 def _get_manifest(asset) -> str:
     """Return the provenance manifest, preferring disk (includes manifest_hash)."""
-    if asset.manifest_path and os.path.exists(asset.manifest_path):
-        with open(asset.manifest_path) as fh:
-            raw = fh.read()
+    manifest_path = resolve_stored_path(asset.manifest_path)
+    if manifest_path is not None and manifest_path.exists():
+        raw = manifest_path.read_text()
         # Append legal disclaimer to manifest data
         try:
             data = json.loads(raw)
