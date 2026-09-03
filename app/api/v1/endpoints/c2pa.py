@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.storage import resolve_stored_path
 from app.core.tenant import resolve_tenant
 from app.db import get_asset
 from app.db.models import Client
@@ -54,14 +55,16 @@ def read_registered_asset_c2pa(
     asset = get_asset(db, omni_id, tenant.tenant_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
-    if not asset.original_path:
+
+    source_path = resolve_stored_path(asset.original_path)
+    if source_path is None:
         raise HTTPException(409, "Registered asset has no original file path")
-    if not Path(asset.original_path).exists():
+    if not source_path.exists():
         raise HTTPException(409, "Registered original file is not available on this storage node")
 
     return {
         "omni_id": asset.omni_id,
         "sha256": asset.sha256,
         "filename": asset.filename,
-        "c2pa": read_c2pa_path(asset.original_path),
+        "c2pa": read_c2pa_path(str(source_path)),
     }
