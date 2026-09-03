@@ -2,7 +2,9 @@ services:
   - type: web
     name: omniveil-backend
     runtime: docker
+    plan: 0.5c-512mb
     dockerfilePath: ./Dockerfile
+    autoDeployTrigger: checksPass
     healthCheckPath: /health
     disk:
       name: omniveil-uploads
@@ -44,5 +46,6 @@ services:
 
 databases:
   - name: omniveil-db
+    plan: 0.1c-256mb
     databaseName: omniveil
     user: omniveil
