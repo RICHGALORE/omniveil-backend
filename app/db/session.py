@@ -55,6 +55,7 @@ def get_db():
 def init_db():
     from app.db.base import Base
     import app.db.models  # noqa: F401
+    import app.db.dpp_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _run_migrations()
@@ -174,6 +175,35 @@ def _run_migrations():
                 "CREATE INDEX IF NOT EXISTS ix_asset_metadata_omni_id ON asset_metadata (omni_id)",
                 "CREATE INDEX IF NOT EXISTS ix_asset_metadata_tenant_id ON asset_metadata (tenant_id)",
                 "CREATE INDEX IF NOT EXISTS ix_asset_metadata_metadata_sha256 ON asset_metadata (metadata_sha256)",
+            ],
+        ),
+        (
+            "digital_product_passports",
+            """
+            CREATE TABLE IF NOT EXISTS digital_product_passports (
+                passport_id VARCHAR PRIMARY KEY,
+                omni_id VARCHAR NOT NULL UNIQUE,
+                tenant_id VARCHAR NOT NULL,
+                passport_level VARCHAR NOT NULL DEFAULT 'item',
+                product_name VARCHAR,
+                brand_name VARCHAR,
+                gtin14 VARCHAR,
+                serial_number VARCHAR,
+                data_carrier_type VARCHAR,
+                canonical_gs1_uri TEXT,
+                resolver_uri TEXT,
+                gs1_uri_syntax_version VARCHAR NOT NULL DEFAULT '1.7.0',
+                gs1_resolver_standard_version VARCHAR NOT NULL DEFAULT '1.2.1',
+                regulatory_framework VARCHAR NOT NULL DEFAULT 'Regulation (EU) 2024/1781',
+                regulatory_status VARCHAR NOT NULL DEFAULT 'readiness_only',
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """,
+            [
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_dpp_omni_id ON digital_product_passports (omni_id)",
+                "CREATE INDEX IF NOT EXISTS ix_dpp_tenant_id ON digital_product_passports (tenant_id)",
+                "CREATE INDEX IF NOT EXISTS ix_dpp_passport_id ON digital_product_passports (passport_id)",
             ],
         ),
     ]
