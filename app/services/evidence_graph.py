@@ -1,9 +1,10 @@
-"""Omni Evidence Graph V1.
+"""Omni Evidence Graph V1.2.
 
 The graph connects evidence about an asset without collapsing distinct evidence
 classes into a single truth claim. Creator declarations, rights claims and
-records, forensic observations, provenance events, certificates, contributor
-attributions, and HumanProof process evidence remain separately identifiable.
+records, digital-product-passport readiness records, forensic observations,
+provenance events, certificates, contributor attributions, and HumanProof
+process evidence remain separately identifiable.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.db.dpp_models import DigitalProductPassport
 from app.db.models import (
     Asset,
     AssetMetadata,
@@ -20,9 +22,10 @@ from app.db.models import (
     LiveSplitSession,
     ProvenanceEvent,
 )
+from app.services.dpp import public_dpp_record
 
 
-GRAPH_VERSION = "1.1"
+GRAPH_VERSION = "1.2"
 
 
 def _loads(value: str | None, default):
@@ -249,6 +252,28 @@ def build_evidence_graph(
                     _edge(contributor_node_id, node_id, "included_in_rights_record")
                 )
 
+    dpp_record = (
+        db.query(DigitalProductPassport)
+        .filter(
+            DigitalProductPassport.omni_id == asset.omni_id,
+            DigitalProductPassport.tenant_id == asset.tenant_id,
+        )
+        .first()
+    )
+    if dpp_record:
+        node_id = f"dpp:{dpp_record.passport_id}"
+        dpp_data = public_dpp_record(dpp_record)
+        dpp_data.pop("related_endpoints", None)
+        nodes.append(
+            _node(
+                node_id,
+                "digital_product_passport",
+                "product_passport_record",
+                dpp_data,
+            )
+        )
+        edges.append(_edge(node_id, asset_node_id, "documents_product_identity_for"))
+
     certificates = (
         db.query(Certificate)
         .filter(Certificate.omni_id == asset.omni_id)
@@ -377,14 +402,16 @@ def build_evidence_graph(
             "verify": f"/api/v1/verify/{asset.omni_id}",
             "omnispectra": f"/api/v1/spectra/assets/{asset.omni_id}",
             "c2pa": f"/api/v1/c2pa/assets/{asset.omni_id}",
+            "dpp": f"/api/v1/dpp/assets/{asset.omni_id}",
         },
         "principles": {
             "separation_of_evidence": True,
             "no_single_source_of_truth_claim": True,
             "note": (
                 "Declarations, forensic observations, rights claims and records, "
-                "certificates, attributions, provenance events, and creation-process "
-                "evidence remain separate evidence classes and may corroborate or conflict."
+                "product-passport records, certificates, attributions, provenance "
+                "events, and creation-process evidence remain separate evidence "
+                "classes and may corroborate or conflict."
             ),
         },
     }

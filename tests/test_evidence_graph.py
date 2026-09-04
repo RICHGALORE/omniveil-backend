@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import main
 from app.api.v1.endpoints import evidence as evidence_endpoint
 from app.core.tenant import hash_api_key
+from app.db.dpp_models import DigitalProductPassport
 from app.db.models import (
     Asset,
     Certificate,
@@ -100,6 +101,25 @@ def _create_asset_bundle(tenant_id: str) -> str:
             )
         )
         db.add(
+            DigitalProductPassport(
+                passport_id=f"dpp-{token}",
+                omni_id=omni_id,
+                tenant_id=tenant_id,
+                passport_level="item",
+                product_name="Evidence Luxury Item",
+                brand_name="Evidence Brand",
+                gtin14="09506000151519",
+                serial_number="EVIDENCE-1",
+                data_carrier_type="qr",
+                canonical_gs1_uri="https://id.gs1.org/01/09506000151519/21/EVIDENCE-1",
+                resolver_uri="https://id.evidence.example/01/09506000151519/21/EVIDENCE-1",
+                gs1_uri_syntax_version="1.7.0",
+                gs1_resolver_standard_version="1.2.1",
+                regulatory_framework="Regulation (EU) 2024/1781",
+                regulatory_status="readiness_only",
+            )
+        )
+        db.add(
             Certificate(
                 cert_id=f"cert-{token}",
                 omni_id=omni_id,
@@ -165,7 +185,7 @@ def test_evidence_graph_keeps_evidence_classes_separate_and_is_tenant_scoped(mon
         assert response.status_code == 200, response.text
         graph = response.json()
 
-        assert graph["graph_version"] == "1.1"
+        assert graph["graph_version"] == "1.2"
         assert graph["root_node_id"] == f"asset:{omni_id}"
         assert graph["principles"]["separation_of_evidence"] is True
         assert graph["principles"]["no_single_source_of_truth_claim"] is True
@@ -176,6 +196,7 @@ def test_evidence_graph_keeps_evidence_classes_separate_and_is_tenant_scoped(mon
             "declaration",
             "rights_claim",
             "rights_record",
+            "product_passport_record",
             "attribution",
             "certificate_attestation",
             "provenance",
@@ -185,6 +206,7 @@ def test_evidence_graph_keeps_evidence_classes_separate_and_is_tenant_scoped(mon
         declaration = next(node for node in graph["nodes"] if node["type"] == "creator_declaration")
         rights = next(node for node in graph["nodes"] if node["type"] == "rights_claim")
         rights_record = next(node for node in graph["nodes"] if node["type"] == "live_split_record")
+        dpp_record = next(node for node in graph["nodes"] if node["type"] == "digital_product_passport")
         contributor = next(node for node in graph["nodes"] if node["type"] == "contributor")
 
         assert declaration["id"] != rights["id"]
@@ -196,6 +218,16 @@ def test_evidence_graph_keeps_evidence_classes_separate_and_is_tenant_scoped(mon
         assert rights_record["data"]["integrity"]["locked_or_finalized"] is True
         assert rights_record["data"]["integrity"]["session_hash_present"] is True
         assert rights_record["data"]["contributors"][0]["name"] == "Evidence Creator"
+
+        assert dpp_record["evidence_class"] == "product_passport_record"
+        assert dpp_record["data"]["regulatory_status"] == "readiness_only"
+        assert dpp_record["data"]["readiness"]["checks"]["physical_data_carrier_presence_verified"] is False
+        assert "does not certify" in dpp_record["data"]["readiness"]["statement"]
+        assert {
+            "source": dpp_record["id"],
+            "target": f"asset:{omni_id}",
+            "relation": "documents_product_identity_for",
+        } in graph["edges"]
 
         assert {
             "source": contributor["id"],
