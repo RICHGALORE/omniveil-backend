@@ -102,10 +102,19 @@ def test_ad_hoc_spectra_scan_requires_auth_and_returns_real_signal_shape(monkeyp
         },
     )
 
-    async def fake_detect(data, mime_type):
-        return 0.12
+    async def fake_detectors(data, *, mime_type, filename=None):
+        return [
+            {
+                "provider": "sightengine",
+                "model": "genai",
+                "signal": "synthetic_media_probability",
+                "probability": 0.12,
+                "status": "available",
+                "details": {},
+            }
+        ]
 
-    monkeypatch.setattr(spectra_endpoint, "_detect_synthetic", fake_detect)
+    monkeypatch.setattr(spectra_endpoint, "run_synthetic_detectors", fake_detectors)
     monkeypatch.setattr(
         spectra_endpoint,
         "_read_temp_c2pa",
@@ -137,5 +146,6 @@ def test_ad_hoc_spectra_scan_requires_auth_and_returns_real_signal_shape(monkeyp
         assert synthetic["probability"] == 0.12
         assert synthetic["provider"] == "sightengine"
         assert synthetic["model"] == "genai"
+        assert body["signals"]["synthetic_detector_summary"]["provider_count"] == 1
         assert body["signals"]["content_credentials"]["risk"] == "neutral"
         assert body["signals"]["metadata_anomalies"]["anomaly_score"] == 15
