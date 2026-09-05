@@ -12,6 +12,7 @@ from app.db import get_asset
 from app.db.models import Client
 from app.db.session import get_db
 from app.services.c2pa_intelligence import read_c2pa_path
+from app.services.forensic_observations import get_forensic_observations
 from app.services.humanproof_public import get_public_humanproof_summary
 from app.services.metadata_anomaly import compute_metadata_anomaly_score
 from app.services.metadata_extraction import extract_metadata_service
@@ -21,30 +22,14 @@ from app.services.metadata_persistence import (
     split_layers,
 )
 from app.services.omnispectra import build_omnispectra_report
-from app.utils import hive
+from app.services.synthetic_detection import (
+    run_synthetic_detectors,
+    sightengine_legacy_score,
+)
 from app.utils.upload_limits import read_upload_limited
 
 
 router = APIRouter(prefix="/spectra", tags=["OmniSpectra"])
-
-
-async def _detect_synthetic(data: bytes, mime_type: str) -> float | None:
-    try:
-        if mime_type.startswith("image/"):
-            return await hive.detect_ai_image(data, mime_type)
-        if mime_type.startswith("audio/"):
-            return await hive.detect_ai_audio(data)
-    except Exception:
-        return None
-    return None
-
-
-def _detector_identity(score: float | None) -> tuple[str | None, str | None]:
-    """Identify the evidence provider only when a detector result exists."""
-    if score is None:
-        return None, None
-    metadata = hive.detector_metadata()
-    return metadata.get("provider"), metadata.get("model")
 
 
 def _read_temp_c2pa(data: bytes, filename: str | None) -> dict:
@@ -85,16 +70,21 @@ async def scan_asset(
         derived=derived,
         mime_type=mime_type,
     )
-    ai_score = await _detect_synthetic(data, mime_type)
-    detector_provider, detector_model = _detector_identity(ai_score)
+    detector_observations = await run_synthetic_detectors(
+        data,
+        mime_type=mime_type,
+        filename=file.filename,
+    )
+    legacy_score = sightengine_legacy_score(detector_observations)
     c2pa = _read_temp_c2pa(data, file.filename)
 
     report = build_omnispectra_report(
         filename=file.filename,
         sha256=(normalized.get("hashes") or {}).get("sha256"),
-        ai_detection_score=ai_score,
-        detector_provider=detector_provider,
-        detector_model=detector_model,
+        ai_detection_score=legacy_score,
+        detector_provider="sightengine" if legacy_score is not None else None,
+        detector_model="genai" if legacy_score is not None else None,
+        detector_observations=detector_observations,
         anomaly=anomaly,
         c2pa=c2pa,
     )
@@ -138,15 +128,21 @@ def get_registered_spectra_report(
         }
 
     humanproof = get_public_humanproof_summary(db, omni_id)
-    detector_provider, detector_model = _detector_identity(asset.ai_detection_score)
+    detector_observations = get_forensic_observations(
+        db,
+        omni_id=omni_id,
+        tenant_id=tenant.tenant_id,
+    )
 
     report = build_omnispectra_report(
         omni_id=asset.omni_id,
         filename=asset.filename,
         sha256=asset.sha256,
+        # Historical assets persist Provider A in this compatibility column.
         ai_detection_score=asset.ai_detection_score,
-        detector_provider=detector_provider,
-        detector_model=detector_model,
+        detector_provider="sightengine" if asset.ai_detection_score is not None else None,
+        detector_model="genai" if asset.ai_detection_score is not None else None,
+        detector_observations=detector_observations,
         anomaly=anomaly,
         c2pa=c2pa,
         watermark_applied=asset.watermark_applied,
