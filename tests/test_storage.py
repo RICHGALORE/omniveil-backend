@@ -107,6 +107,7 @@ def test_spectra_registered_asset_remaps_legacy_source_path(monkeypatch, tmp_pat
     monkeypatch.setattr(spectra, "get_asset", lambda _db, _omni_id, _tenant_id: asset)
     monkeypatch.setattr(spectra, "get_metadata_by_omni_id", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(spectra, "get_public_humanproof_summary", lambda *_args: None)
+    monkeypatch.setattr(spectra, "get_forensic_observations", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(spectra, "read_c2pa_path", lambda path: {"source_path": path})
     monkeypatch.setattr(spectra, "build_omnispectra_report", lambda **kwargs: kwargs)
 

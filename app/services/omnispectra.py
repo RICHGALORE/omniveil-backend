@@ -1,11 +1,12 @@
-"""OmniSpectra V1 — multi-signal forensic evidence orchestration.
+"""OmniSpectra V1.1 — multi-signal forensic evidence orchestration.
 
 OmniSpectra does not pretend any single detector can prove authenticity. It
-normalizes independent evidence sources (metadata anomalies, synthetic-media
-probability, C2PA Content Credentials, watermark state, and HumanProof chain
-integrity) into one explainable report while preserving the original signals.
+normalizes independent evidence sources (metadata anomalies, provider-specific
+synthetic-media probabilities, C2PA Content Credentials, watermark state, and
+HumanProof chain integrity) into one explainable report while preserving the
+original signals.
 
-The V1 verdict is intentionally rule-based and conservative. It is a review
+The verdict is intentionally rule-based and conservative. It is a review
 priority, not a legal/authorship determination and not a replacement for the
 existing Omni Veil Trust Score.
 """
@@ -15,7 +16,15 @@ from typing import Any, Optional
 
 
 ENGINE_NAME = "Omni Veil OmniSpectra"
-ENGINE_VERSION = "1.0.1"
+ENGINE_VERSION = "1.1.0"
+
+
+def _risk_for_probability(probability: float) -> str:
+    if probability >= 0.80:
+        return "high"
+    if probability >= 0.50:
+        return "elevated"
+    return "low"
 
 
 def _synthetic_signal(
@@ -23,6 +32,7 @@ def _synthetic_signal(
     *,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    signal: Optional[str] = None,
 ) -> dict:
     if score is None:
         return {
@@ -31,27 +41,116 @@ def _synthetic_signal(
             "risk": "unknown",
             "provider": provider,
             "model": model,
+            "signal": signal,
             "note": "No synthetic-media detector result is available for this asset.",
         }
 
     probability = max(0.0, min(1.0, float(score)))
-    if probability >= 0.80:
-        risk = "high"
-    elif probability >= 0.50:
-        risk = "elevated"
-    else:
-        risk = "low"
-
     return {
         "available": True,
         "probability": round(probability, 4),
         "probability_pct": round(probability * 100, 2),
-        "risk": risk,
+        "risk": _risk_for_probability(probability),
         "provider": provider,
         "model": model,
+        "signal": signal,
         "note": (
             "Model probability is one forensic signal. It does not independently prove "
             "that an asset is human-made or AI-generated."
+        ),
+    }
+
+
+def _normalized_detector_observations(observations: Optional[list[dict]]) -> list[dict]:
+    normalized: list[dict] = []
+    for observation in observations or []:
+        if not isinstance(observation, dict):
+            continue
+        try:
+            probability = float(observation.get("probability"))
+        except (TypeError, ValueError):
+            continue
+        probability = max(0.0, min(1.0, probability))
+        provider = str(observation.get("provider") or "").strip() or None
+        model = str(observation.get("model") or "").strip() or None
+        signal = str(observation.get("signal") or "").strip() or None
+        if not provider or not model or not signal:
+            continue
+        details = observation.get("details")
+        if not isinstance(details, dict):
+            details = {}
+        normalized.append(
+            {
+                "observation_id": observation.get("observation_id"),
+                "available": True,
+                "provider": provider,
+                "model": model,
+                "signal": signal,
+                "probability": round(probability, 4),
+                "probability_pct": round(probability * 100, 2),
+                "risk": _risk_for_probability(probability),
+                "status": observation.get("status") or "available",
+                "details": details,
+                "observed_at": observation.get("observed_at"),
+                "note": (
+                    "Provider-specific probability; preserved independently and not "
+                    "averaged into a synthetic consensus score."
+                ),
+            }
+        )
+    return normalized
+
+
+def _primary_synthetic_signal(
+    *,
+    ai_detection_score: Optional[float],
+    detector_provider: Optional[str],
+    detector_model: Optional[str],
+    detector_observations: list[dict],
+) -> dict:
+    # Preserve the historical Provider-A field when it exists. This keeps API
+    # compatibility and prevents a newly added provider from silently changing
+    # the meaning of persisted legacy trust inputs.
+    if ai_detection_score is not None:
+        return _synthetic_signal(
+            ai_detection_score,
+            provider=detector_provider,
+            model=detector_model,
+            signal="legacy_primary_detector_probability",
+        )
+
+    if detector_observations:
+        strongest = max(detector_observations, key=lambda item: item["probability"])
+        return _synthetic_signal(
+            strongest["probability"],
+            provider=strongest.get("provider"),
+            model=strongest.get("model"),
+            signal=strongest.get("signal"),
+        )
+
+    return _synthetic_signal(None, provider=detector_provider, model=detector_model)
+
+
+def _detector_summary(observations: list[dict]) -> dict:
+    providers = sorted({str(item.get("provider")) for item in observations if item.get("provider")})
+    if not observations:
+        highest_risk = "unknown"
+    elif any(item.get("risk") == "high" for item in observations):
+        highest_risk = "high"
+    elif any(item.get("risk") == "elevated" for item in observations):
+        highest_risk = "elevated"
+    else:
+        highest_risk = "low"
+    return {
+        "available": bool(observations),
+        "provider_count": len(providers),
+        "providers": providers,
+        "observation_count": len(observations),
+        "highest_risk": highest_risk,
+        "consensus_score": None,
+        "note": (
+            "Omni Veil preserves detector disagreement. Provider probabilities are not "
+            "averaged into a consensus/authenticity score."
         ),
     }
 
@@ -167,9 +266,10 @@ def _verdict(signals: dict) -> tuple[str, list[str]]:
     reasons: list[str] = []
 
     metadata = signals["metadata_anomalies"]
-    synthetic = signals["synthetic_detection"]
     c2pa = signals["content_credentials"]
     humanproof = signals["humanproof"]
+    detector_observations = signals.get("synthetic_detectors") or []
+    primary_synthetic = signals["synthetic_detection"]
 
     if c2pa.get("risk") == "high":
         reasons.append("C2PA validation reported a failure.")
@@ -177,7 +277,9 @@ def _verdict(signals: dict) -> tuple[str, list[str]]:
         reasons.append("HumanProof chain integrity failed or is invalid.")
     if metadata.get("risk") == "high":
         reasons.append("Metadata anomaly score is high.")
-    if synthetic.get("risk") == "high":
+    if any(item.get("risk") == "high" for item in detector_observations):
+        reasons.append("At least one independent synthetic-media detector probability is high.")
+    elif not detector_observations and primary_synthetic.get("risk") == "high":
         reasons.append("Synthetic-media detector probability is high.")
 
     if reasons:
@@ -186,7 +288,9 @@ def _verdict(signals: dict) -> tuple[str, list[str]]:
     elevated: list[str] = []
     if metadata.get("risk") == "elevated":
         elevated.append("Metadata anomalies warrant review.")
-    if synthetic.get("risk") == "elevated":
+    if any(item.get("risk") == "elevated" for item in detector_observations):
+        elevated.append("At least one independent synthetic-media detector probability is elevated.")
+    elif not detector_observations and primary_synthetic.get("risk") == "elevated":
         elevated.append("Synthetic-media detector probability is elevated.")
     if humanproof.get("risk") == "elevated":
         elevated.append("HumanProof evidence is incomplete.")
@@ -194,10 +298,16 @@ def _verdict(signals: dict) -> tuple[str, list[str]]:
     if elevated:
         return "review_recommended", elevated
 
+    synthetic_available = bool(detector_observations) or primary_synthetic.get("available")
     available_count = sum(
         1
-        for key in ("metadata_anomalies", "synthetic_detection", "content_credentials", "humanproof")
-        if signals[key].get("available")
+        for available in (
+            signals["metadata_anomalies"].get("available"),
+            synthetic_available,
+            signals["content_credentials"].get("available"),
+            signals["humanproof"].get("available"),
+        )
+        if available
     )
     if available_count == 0:
         return "insufficient_evidence", ["No substantive forensic evidence sources are available."]
@@ -213,6 +323,7 @@ def build_omnispectra_report(
     ai_detection_score: Optional[float] = None,
     detector_provider: Optional[str] = None,
     detector_model: Optional[str] = None,
+    detector_observations: Optional[list[dict]] = None,
     anomaly: Optional[dict] = None,
     c2pa: Optional[dict] = None,
     watermark_applied: Optional[bool] = None,
@@ -220,13 +331,17 @@ def build_omnispectra_report(
     watermark_invisible: Optional[bool] = None,
     humanproof: Optional[dict] = None,
 ) -> dict:
+    normalized_observations = _normalized_detector_observations(detector_observations)
     signals = {
         "metadata_anomalies": _metadata_signal(anomaly),
-        "synthetic_detection": _synthetic_signal(
-            ai_detection_score,
-            provider=detector_provider,
-            model=detector_model,
+        "synthetic_detection": _primary_synthetic_signal(
+            ai_detection_score=ai_detection_score,
+            detector_provider=detector_provider,
+            detector_model=detector_model,
+            detector_observations=normalized_observations,
         ),
+        "synthetic_detectors": normalized_observations,
+        "synthetic_detector_summary": _detector_summary(normalized_observations),
         "content_credentials": _c2pa_signal(c2pa),
         "watermark": _watermark_signal(
             applied=watermark_applied,
@@ -249,6 +364,7 @@ def build_omnispectra_report(
         "limitations": [
             "OmniSpectra is an evidence orchestration layer, not a single-model authenticity oracle.",
             "Detector probabilities can be wrong and must be interpreted with provenance and contextual evidence.",
+            "Independent detector probabilities are preserved separately and are not averaged into a consensus score.",
             "C2PA absence is neutral; C2PA presence validates signed provenance bindings, not every factual assertion.",
             "This report is not a legal determination of authorship, copyright ownership, or fraud.",
         ],

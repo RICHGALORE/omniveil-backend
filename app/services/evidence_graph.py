@@ -1,10 +1,10 @@
-"""Omni Evidence Graph V1.2.
+"""Omni Evidence Graph V1.3.
 
 The graph connects evidence about an asset without collapsing distinct evidence
 classes into a single truth claim. Creator declarations, rights claims and
-records, digital-product-passport readiness records, forensic observations,
-provenance events, certificates, contributor attributions, and HumanProof
-process evidence remain separately identifiable.
+records, digital-product-passport readiness records, provider-specific forensic
+observations, provenance events, certificates, contributor attributions, and
+HumanProof process evidence remain separately identifiable.
 """
 from __future__ import annotations
 
@@ -23,9 +23,10 @@ from app.db.models import (
     ProvenanceEvent,
 )
 from app.services.dpp import public_dpp_record
+from app.services.forensic_observations import get_forensic_observations
 
 
-GRAPH_VERSION = "1.2"
+GRAPH_VERSION = "1.3"
 
 
 def _loads(value: str | None, default):
@@ -355,8 +356,40 @@ def build_evidence_graph(
         )
         edges.append(_edge(node_id, asset_node_id, "observes"))
 
-    if asset.ai_detection_score is not None:
-        node_id = f"forensic:synthetic:{asset.omni_id}"
+    detector_observations = get_forensic_observations(
+        db,
+        omni_id=asset.omni_id,
+        tenant_id=asset.tenant_id,
+    ) if asset.tenant_id else []
+    persisted_detector_keys: set[tuple[str, str]] = set()
+    for observation in detector_observations:
+        provider = observation.get("provider")
+        model = observation.get("model")
+        if provider and model:
+            persisted_detector_keys.add((str(provider), str(model)))
+        node_id = f"forensic:synthetic:{observation.get('observation_id') or len(nodes)}"
+        nodes.append(
+            _node(
+                node_id,
+                "forensic_observation",
+                "forensic_observation",
+                {
+                    "signal": observation.get("signal"),
+                    "probability": observation.get("probability"),
+                    "provider": provider,
+                    "model": model,
+                    "status": observation.get("status"),
+                    "details": observation.get("details") or {},
+                    "observed_at": observation.get("observed_at"),
+                    "interpretation": "probabilistic_signal_not_determination",
+                },
+            )
+        )
+        edges.append(_edge(node_id, asset_node_id, "observes"))
+
+    # Backward compatibility for assets registered before durable provider rows.
+    if asset.ai_detection_score is not None and ("sightengine", "genai") not in persisted_detector_keys:
+        node_id = f"forensic:synthetic:legacy:{asset.omni_id}"
         nodes.append(
             _node(
                 node_id,
@@ -367,6 +400,7 @@ def build_evidence_graph(
                     "probability": asset.ai_detection_score,
                     "provider": "sightengine",
                     "model": "genai",
+                    "status": "legacy_persisted_score",
                     "interpretation": "probabilistic_signal_not_determination",
                 },
             )
@@ -401,17 +435,19 @@ def build_evidence_graph(
             "registry": f"/api/v1/registry/assets/{asset.omni_id}",
             "verify": f"/api/v1/verify/{asset.omni_id}",
             "omnispectra": f"/api/v1/spectra/assets/{asset.omni_id}",
+            "refresh_detectors": f"/api/v1/spectra/assets/{asset.omni_id}/detectors",
             "c2pa": f"/api/v1/c2pa/assets/{asset.omni_id}",
             "dpp": f"/api/v1/dpp/assets/{asset.omni_id}",
         },
         "principles": {
             "separation_of_evidence": True,
             "no_single_source_of_truth_claim": True,
+            "detector_scores_not_averaged": True,
             "note": (
-                "Declarations, forensic observations, rights claims and records, "
-                "product-passport records, certificates, attributions, provenance "
-                "events, and creation-process evidence remain separate evidence "
-                "classes and may corroborate or conflict."
+                "Declarations, provider-specific forensic observations, rights claims and records, "
+                "product-passport records, certificates, attributions, provenance events, and "
+                "creation-process evidence remain separate evidence classes and may corroborate "
+                "or conflict."
             ),
         },
     }

@@ -46,6 +46,23 @@ def test_expensive_upload_route_is_limited_per_tenant(monkeypatch):
     ) is None
 
 
+def test_registered_detector_refresh_has_separate_paid_provider_limit(monkeypatch):
+    monkeypatch.setenv("OV_RATE_LIMIT_DETECTOR_REFRESH", "2/minute")
+    path = "/api/v1/spectra/assets/OV-RATE-TEST/detectors"
+    tenant = "rate-test-detector-tenant"
+
+    assert explicit_rate_limit_response(_request(path, tenant)) is None
+    assert explicit_rate_limit_response(_request(path, tenant)) is None
+
+    blocked = explicit_rate_limit_response(_request(path, tenant))
+    assert blocked is not None
+    assert blocked.status_code == 429
+
+    # Similar-looking paths must not accidentally consume the paid-provider bucket.
+    unrelated = "/api/v1/spectra/assets/OV-RATE-TEST/detectors/history"
+    assert explicit_rate_limit_response(_request(unrelated, tenant)) is None
+
+
 def test_public_verify_is_not_part_of_expensive_route_limits(monkeypatch):
     monkeypatch.setenv("OV_RATE_LIMIT_UPLOAD", "1/minute")
     request = _request("/api/v1/verify/OV-TEST", "rate-test-public", method="GET")

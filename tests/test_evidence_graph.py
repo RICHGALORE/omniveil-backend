@@ -185,7 +185,7 @@ def test_evidence_graph_keeps_evidence_classes_separate_and_is_tenant_scoped(mon
         assert response.status_code == 200, response.text
         graph = response.json()
 
-        assert graph["graph_version"] == "1.2"
+        assert graph["graph_version"] == "1.3"
         assert graph["root_node_id"] == f"asset:{omni_id}"
         assert graph["principles"]["separation_of_evidence"] is True
         assert graph["principles"]["no_single_source_of_truth_claim"] is True

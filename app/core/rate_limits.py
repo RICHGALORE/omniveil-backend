@@ -31,6 +31,10 @@ def spectra_scan_limit() -> str:
     return _limit_from_env("OV_RATE_LIMIT_SPECTRA_SCAN", "30/minute")
 
 
+def detector_refresh_limit() -> str:
+    return _limit_from_env("OV_RATE_LIMIT_DETECTOR_REFRESH", "10/minute")
+
+
 def c2pa_read_limit() -> str:
     return _limit_from_env("OV_RATE_LIMIT_C2PA_READ", "30/minute")
 
@@ -48,8 +52,29 @@ _ROUTE_LIMITS: dict[tuple[str, str], tuple[Callable[[], str], str]] = {
 }
 
 
+def _route_limit_rule(request: Request) -> tuple[Callable[[], str], str] | None:
+    method = request.method.upper()
+    path = request.url.path
+
+    exact = _ROUTE_LIMITS.get((method, path))
+    if exact is not None:
+        return exact
+
+    # Registered detector refreshes call paid external providers. Match the
+    # single Omni-ID path segment explicitly so unrelated Spectra routes do not
+    # inherit this bucket by accident.
+    prefix = "/api/v1/spectra/assets/"
+    suffix = "/detectors"
+    if method == "POST" and path.startswith(prefix) and path.endswith(suffix):
+        omni_id = path[len(prefix) : -len(suffix)].strip("/")
+        if omni_id and "/" not in omni_id:
+            return detector_refresh_limit, "10/minute"
+
+    return None
+
+
 def explicit_rate_limit_response(request: Request) -> JSONResponse | None:
-    rule = _ROUTE_LIMITS.get((request.method.upper(), request.url.path))
+    rule = _route_limit_rule(request)
     if rule is None:
         return None
 
