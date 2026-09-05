@@ -4,21 +4,6 @@ from app.services import hive_detection, synthetic_detection
 from app.services.omnispectra import build_omnispectra_report
 
 
-def _payload(classes, *, chunks=1):
-    output = []
-    for index in range(chunks):
-        output.append(
-            {
-                "start_time": index * 10,
-                "classes": [
-                    {"class": name, "score": score}
-                    for name, score in classes[index if isinstance(classes, list) and classes and isinstance(classes[0], list) else ...]
-                ] if False else [],
-            }
-        )
-    return output
-
-
 def test_hive_media_reads_named_class_without_array_position(monkeypatch):
     async def fake_submit(**kwargs):
         return {
@@ -136,25 +121,13 @@ def test_hive_music_keeps_music_cover_and_attribution_separate(monkeypatch):
     )
 
 
-def test_no_hive_key_returns_unavailable_without_submit(monkeypatch):
-    called = False
+def test_no_hive_key_short_circuits_before_network(monkeypatch):
+    class NetworkMustNotStart:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("Hive HTTP client must not start without an API key")
 
-    async def fake_submit(**kwargs):
-        nonlocal called
-        called = True
-        return {}
+    monkeypatch.setattr(hive_detection.httpx, "AsyncClient", NetworkMustNotStart)
 
-    monkeypatch.setattr(hive_detection, "_submit", fake_submit)
-    result = asyncio.run(
-        hive_detection.detect_generated_media(
-            b"image",
-            api_key="",
-            filename="asset.png",
-            mime_type="image/png",
-        )
-    )
-    # detect_generated_media delegates to _submit; the real _submit's no-key guard
-    # is tested directly here to ensure no network is needed.
     direct = asyncio.run(
         hive_detection._submit(
             api_key="",
@@ -163,9 +136,16 @@ def test_no_hive_key_returns_unavailable_without_submit(monkeypatch):
             mime_type="image/png",
         )
     )
-    assert result is None
+    media = asyncio.run(
+        hive_detection.detect_generated_media(
+            b"image",
+            api_key="",
+            filename="asset.png",
+            mime_type="image/png",
+        )
+    )
     assert direct is None
-    assert called is True
+    assert media is None
 
 
 def test_orchestrator_preserves_sightengine_and_hive_as_independent_observations(monkeypatch):
@@ -189,6 +169,7 @@ def test_orchestrator_preserves_sightengine_and_hive_as_independent_observations
     )
     monkeypatch.setattr(synthetic_detection, "hive_detect_media", fake_hive)
     monkeypatch.setattr(synthetic_detection.settings, "hive_media_api_key", "hive-key")
+    monkeypatch.setattr(synthetic_detection.settings, "hive_api_key", "")
 
     observations = asyncio.run(
         synthetic_detection.run_synthetic_detectors(
