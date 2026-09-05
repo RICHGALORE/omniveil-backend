@@ -12,7 +12,14 @@ class Settings(BaseSettings):
     upload_dir: str = "uploads"
     watermark_dir: str = "watermarked"
     max_upload_mb: int = 50
+
+    # External synthetic-media providers. HIVE_API_KEY is retained as a legacy
+    # fallback for Hive visual-media detection only. Audio and music use their
+    # own project/model keys so provider evidence cannot be silently mislabeled.
     hive_api_key: str = ""
+    hive_media_api_key: str = ""
+    hive_audio_api_key: str = ""
+    hive_music_api_key: str = ""
     sightengine_user: str = ""
     sightengine_secret: str = ""
 
