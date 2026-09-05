@@ -33,6 +33,12 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false
+      - key: HIVE_MEDIA_API_KEY
+        sync: false
+      - key: HIVE_AUDIO_API_KEY
+        sync: false
+      - key: HIVE_MUSIC_API_KEY
+        sync: false
       - key: SIGHTENGINE_USER
         sync: false
       - key: SIGHTENGINE_SECRET
@@ -41,6 +47,8 @@ services:
         value: 20/minute
       - key: OV_RATE_LIMIT_SPECTRA_SCAN
         value: 30/minute
+      - key: OV_RATE_LIMIT_DETECTOR_REFRESH
+        value: 10/minute
       - key: OV_RATE_LIMIT_C2PA_READ
         value: 30/minute
 
