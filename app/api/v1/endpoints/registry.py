@@ -6,8 +6,17 @@ import mimetypes
 
 from app.core.tenant import resolve_tenant
 from app.db.session import get_db
-from app.db.models import Certificate, Client
+from app.db.models import Asset, Certificate, Client
 from app.db import get_asset, get_all_assets
+from app.services.asset_facts import (
+    ai_facts,
+    asset_identity,
+    build_asset_facts,
+    human_authorship,
+    ownership_facts,
+    readiness_facts,
+    trust_facts,
+)
 from app.services.copyright_report import generate_copyright_readiness_report
 from app.services.export_package import build_export_package
 from app.services.humanproof_public import get_public_humanproof_summary
@@ -22,25 +31,34 @@ def list_assets(
     db: Session = Depends(get_db),
 ):
     assets = get_all_assets(db, limit, tenant.tenant_id)
+    total_count = (
+        db.query(Asset)
+        .filter(Asset.tenant_id == tenant.tenant_id)
+        .count()
+    )
+    items = [
+        {
+            "omni_id": a.omni_id,
+            "filename": a.filename,
+            "asset_type": a.asset_type,
+            "file_type": a.file_type,
+            "trust_score": a.trust_score,
+            "content_label": a.content_label,
+            "creator_name": a.creator_name,
+            "ai_disclosure": a.ai_disclosure,
+            "certificate_class": a.certificate_class,
+            "certificate_class_label": a.certificate_class_label,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "total_verifications": int(a.total_verifications or 0),
+        }
+        for a in assets
+    ]
     return {
-        "items": [
-            {
-                "omni_id": a.omni_id,
-                "filename": a.filename,
-                "asset_type": a.asset_type,
-                "file_type": a.file_type,
-                "trust_score": a.trust_score,
-                "content_label": a.content_label,
-                "creator_name": a.creator_name,
-                "ai_disclosure": a.ai_disclosure,
-                "certificate_class": a.certificate_class,
-                "certificate_class_label": a.certificate_class_label,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
-                "total_verifications": a.total_verifications,
-            }
-            for a in assets
-        ],
-        "total": len(assets),
+        "items": items,
+        "total": total_count,
+        "total_count": total_count,
+        "returned_count": len(items),
+        "limit": limit,
     }
 
 
@@ -49,43 +67,44 @@ def get_public_registry_asset(
     omni_id: str,
     db: Session = Depends(get_db),
 ):
-    """
-    Public registry lookup endpoint.
-
-    This powers registry_url links generated during upload:
-    /api/v1/registry/assets/{omni_id}
-    """
+    """Public-safe registry lookup backed by persisted asset facts."""
     asset = get_asset(db, omni_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
 
+    identity = asset_identity(asset)
+    trust = trust_facts(asset)
+    ai = ai_facts(asset)
+    readiness = readiness_facts(asset)
+    rights = ownership_facts(asset, asset.contributors)
+
     return {
-        "omni_id": asset.omni_id,
-        "asset_id": asset.asset_id,
-        "filename": asset.filename,
-        "sha256": asset.sha256,
-        "blake3": asset.blake3,
-        "phash": asset.phash,
-        "trust_score": asset.trust_score,
-        "content_label": asset.content_label,
-        "label_reasons": json.loads(asset.label_reasons or "[]"),
-        "ai_detection_score": asset.ai_detection_score,
-        "ai_disclosure": asset.ai_disclosure,
-        "watermark_applied": asset.watermark_applied,
-        "watermark_visible": asset.watermark_visible,
-        "watermark_invisible": asset.watermark_invisible,
-        "creator_name": asset.creator_name,
-        "copyright_owner": asset.copyright_owner,
-        "license_type": asset.license_type,
-        "registry_url": asset.registry_url,
-        "created_at": asset.created_at.isoformat() if asset.created_at else None,
-        "file_size_bytes": asset.file_size_bytes,
-        "certificate_class": asset.certificate_class,
-        "certificate_class_label": asset.certificate_class_label,
+        "omni_id": identity["omni_id"],
+        "asset_id": identity["asset_id"],
+        "filename": identity["filename"],
+        "sha256": identity["sha256"],
+        "blake3": identity["blake3"],
+        "phash": identity["phash"],
+        "trust_score": trust["trust_score"],
+        "content_label": trust["content_label"],
+        "label_reasons": trust["label_reasons"],
+        "ai_detection_score": ai["detection_score"],
+        "ai_disclosure": ai["disclosure"],
+        "watermark_applied": trust["watermark_applied"],
+        "watermark_visible": trust["watermark_visible"],
+        "watermark_invisible": trust["watermark_invisible"],
+        "creator_name": identity["creator_name"],
+        "copyright_owner": rights["copyright_owner"],
+        "license_type": rights["license_type"],
+        "registry_url": identity["registry_url"],
+        "created_at": identity["created_at"],
+        "file_size_bytes": identity["file_size_bytes"],
+        "certificate_class": readiness["certificate_class"],
+        "certificate_class_label": readiness["certificate_class_label"],
         "copyright_readiness": {
-            "score": asset.copyright_readiness_score,
-            "label": asset.copyright_readiness_label,
-            "certificate_class": asset.certificate_class,
+            "score": readiness["score"],
+            "label": readiness["label"],
+            "certificate_class": readiness["certificate_class"],
         },
         "humanproof": get_public_humanproof_summary(db, asset.omni_id),
         "legal_disclaimer": "Omni Veil provides provenance and authorship documentation infrastructure. Final copyright determinations are made by the applicable copyright authority.",
@@ -98,67 +117,62 @@ def get_report(
     tenant: Client = Depends(resolve_tenant),
     db: Session = Depends(get_db),
 ):
+    """Read an asset report without mutating verification counters."""
     asset = get_asset(db, omni_id, tenant.tenant_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
 
-    asset.total_verifications += 1
-    db.commit()
+    identity = asset_identity(asset)
+    trust = trust_facts(asset)
+    ai = ai_facts(asset)
+    rights = ownership_facts(asset, asset.contributors)
+    readiness = readiness_facts(asset)
 
-    ai_tools: list = []
-    if asset.ai_tools_used_json:
-        try:
-            ai_tools = json.loads(asset.ai_tools_used_json)
-        except (json.JSONDecodeError, TypeError):
-            ai_tools = []
+    mime_type = asset.file_type or mimetypes.guess_type(asset.filename or "")[0]
+    asset_type = asset.asset_type or ((mime_type or "file").split("/")[0])
 
     return {
-        "omni_id": asset.omni_id,
-        "asset_id": asset.asset_id,
-        "filename": asset.filename,
-        "file_type": asset.file_type,
-        "mime_type": getattr(asset, "mime_type", None) or asset.file_type or mimetypes.guess_type(asset.filename or "")[0],
-        "asset_type": getattr(asset, "asset_type", None) or ((asset.file_type or mimetypes.guess_type(asset.filename or "")[0] or "file").split("/")[0]),
-        "sha256": asset.sha256,
-        "blake3": asset.blake3,
-        "phash": asset.phash,
-        "trust_score": asset.trust_score,
-        "content_label": asset.content_label,
-        "label_reasons": json.loads(asset.label_reasons or "[]"),
-        "ai_detection_score": asset.ai_detection_score,
-        "ai_disclosure": asset.ai_disclosure,
-        "watermark_applied": asset.watermark_applied,
-        "watermark_visible": asset.watermark_visible,
-        "watermark_invisible": asset.watermark_invisible,
+        "omni_id": identity["omni_id"],
+        "asset_id": identity["asset_id"],
+        "filename": identity["filename"],
+        "file_type": identity["file_type"],
+        "mime_type": mime_type,
+        "asset_type": asset_type,
+        "sha256": identity["sha256"],
+        "blake3": identity["blake3"],
+        "phash": identity["phash"],
+        "trust_score": trust["trust_score"],
+        "content_label": trust["content_label"],
+        "label_reasons": trust["label_reasons"],
+        "ai_detection_score": ai["detection_score"],
+        "ai_disclosure": ai["disclosure"],
+        "watermark_applied": trust["watermark_applied"],
+        "watermark_visible": trust["watermark_visible"],
+        "watermark_invisible": trust["watermark_invisible"],
         "original_path": asset.original_path,
         "watermarked_path": asset.watermarked_path,
         "certificate_path": asset.certificate_path,
         "manifest_path": asset.manifest_path,
-        "creator_name": asset.creator_name,
-        "copyright_owner": asset.copyright_owner,
-        "license_type": asset.license_type,
-        "file_size_bytes": asset.file_size_bytes,
-        "total_verifications": asset.total_verifications,
-        "created_at": asset.created_at.isoformat() if asset.created_at else None,
-        "registry_url": asset.registry_url,
+        "creator_name": identity["creator_name"],
+        "copyright_owner": rights["copyright_owner"],
+        "license_type": rights["license_type"],
+        "file_size_bytes": identity["file_size_bytes"],
+        "total_verifications": trust["total_verifications"],
+        "created_at": identity["created_at"],
+        "registry_url": identity["registry_url"],
         "humanproof": get_public_humanproof_summary(db, asset.omni_id),
-        # ── Copyright readiness ──────────────────────────────────────────────
-        "copyright_readiness_score": asset.copyright_readiness_score,
-        "copyright_readiness_label": asset.copyright_readiness_label,
-        "human_authorship_evidence": {
-            "creative_direction": asset.human_creative_direction,
-            "editing": asset.human_editing_present,
-            "arrangement": asset.human_arrangement_present,
-            "lyrics": asset.human_lyrics_present,
-            "performance": asset.human_performance_present,
-            "transformation": asset.human_transformation_present,
-            "summary": asset.human_authorship_summary,
-        },
+        "copyright_readiness_score": readiness["score"],
+        "copyright_readiness_label": readiness["label"],
+        "certificate_class": readiness["certificate_class"],
+        "certificate_class_label": readiness["certificate_class_label"],
+        "human_authorship_evidence": human_authorship(asset),
         "ai_assisted_contributions": {
-            "ai_tools_used": ai_tools,
-            "ai_disclosure_complete": asset.ai_disclosure_complete,
-            "ai_modification_by_human": asset.ai_modification_by_human,
+            "ai_tools_used": ai["declared_tools"],
+            "ai_disclosure_complete": ai["disclosure_complete"],
+            "ai_modification_by_human": ai["modification_by_human"],
         },
+        "ownership_declarations": rights,
+        "stored_facts": build_asset_facts(asset, asset.contributors),
     }
 
 
@@ -168,22 +182,11 @@ def export_copyright_package(
     tenant: Client = Depends(resolve_tenant),
     db: Session = Depends(get_db),
 ):
-    """
-    Download a ZIP copyright export package for an asset.
-
-    Contains: certificate.json, provenance_manifest.json,
-    contributor_declarations.json, workflow_analysis.json,
-    timestamps.json, audit_history.json, authorship_summary.json, README.txt
-
-    Omni Veil provides provenance and authorship documentation infrastructure.
-    Final copyright determinations are made by the applicable copyright authority.
-    """
     asset = get_asset(db, omni_id, tenant.tenant_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
 
     zip_bytes, filename = build_export_package(asset)
-
     return Response(
         content=zip_bytes,
         media_type="application/zip",
@@ -200,20 +203,9 @@ def get_copyright_report(
     tenant: Client = Depends(resolve_tenant),
     db: Session = Depends(get_db),
 ):
-    """
-    Generate a full Copyright Readiness Report for an asset.
-
-    Contains human contributors, AI tools, workflow lineage, transformation
-    chain, timestamps, contributor declarations, ownership declarations,
-    provenance continuity score, and the required legal disclaimer.
-
-    Omni Veil provides provenance and authorship documentation infrastructure.
-    Final copyright determinations are made by the applicable copyright authority.
-    """
     asset = get_asset(db, omni_id, tenant.tenant_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
-
     return generate_copyright_readiness_report(asset)
 
 
@@ -226,15 +218,18 @@ def get_asset_info(
     asset = get_asset(db, omni_id, tenant.tenant_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
+    identity = asset_identity(asset)
+    trust = trust_facts(asset)
+    ai = ai_facts(asset)
     return {
-        "omni_id": asset.omni_id,
-        "filename": asset.filename,
-        "asset_type": asset.asset_type,
-        "trust_score": asset.trust_score,
-        "content_label": asset.content_label,
-        "ai_disclosure": asset.ai_disclosure,
-        "creator_name": asset.creator_name,
-        "created_at": asset.created_at.isoformat() if asset.created_at else None,
+        "omni_id": identity["omni_id"],
+        "filename": identity["filename"],
+        "asset_type": identity["asset_type"],
+        "trust_score": trust["trust_score"],
+        "content_label": trust["content_label"],
+        "ai_disclosure": ai["disclosure"],
+        "creator_name": identity["creator_name"],
+        "created_at": identity["created_at"],
         "humanproof": get_public_humanproof_summary(db, asset.omni_id),
     }
 
@@ -269,17 +264,25 @@ def list_certificates(
     tenant: Client = Depends(resolve_tenant),
     db: Session = Depends(get_db),
 ):
-    certificates = (
+    base_query = (
         db.query(Certificate)
         .join(Certificate.asset)
         .filter(Certificate.asset.has(tenant_id=tenant.tenant_id))
+    )
+    total_count = base_query.count()
+    certificates = (
+        base_query
         .order_by(Certificate.issued_at.desc())
         .limit(limit)
         .all()
     )
+    items = [_certificate_item(certificate) for certificate in certificates]
     return {
-        "items": [_certificate_item(certificate) for certificate in certificates],
-        "total": len(certificates),
+        "items": items,
+        "total": total_count,
+        "total_count": total_count,
+        "returned_count": len(items),
+        "limit": limit,
     }
 
 
@@ -308,21 +311,23 @@ def get_certificate(
         payload = {}
 
     asset = certificate.asset
+    facts = build_asset_facts(asset, asset.contributors)
     item.update({
         "certificate": payload,
         "asset": {
-            "omni_id": asset.omni_id,
-            "filename": asset.filename,
-            "asset_type": asset.asset_type,
-            "creator_name": asset.creator_name,
-            "copyright_owner": asset.copyright_owner,
-            "license_type": asset.license_type,
-            "sha256": asset.sha256,
-            "blake3": asset.blake3,
-            "trust_score": asset.trust_score,
-            "content_label": asset.content_label,
-            "created_at": asset.created_at.isoformat() if asset.created_at else None,
+            "omni_id": facts["identity"]["omni_id"],
+            "filename": facts["identity"]["filename"],
+            "asset_type": facts["identity"]["asset_type"],
+            "creator_name": facts["identity"]["creator_name"],
+            "copyright_owner": facts["rights"]["copyright_owner"],
+            "license_type": facts["rights"]["license_type"],
+            "sha256": facts["identity"]["sha256"],
+            "blake3": facts["identity"]["blake3"],
+            "trust_score": facts["trust"]["trust_score"],
+            "content_label": facts["trust"]["content_label"],
+            "created_at": facts["identity"]["created_at"],
         },
+        "stored_facts": facts,
         "humanproof": get_public_humanproof_summary(db, asset.omni_id),
     })
     return item
