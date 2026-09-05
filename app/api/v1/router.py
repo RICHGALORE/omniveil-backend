@@ -12,6 +12,7 @@ from app.api.v1.endpoints.c2pa import router as c2pa_router
 from app.api.v1.endpoints.spectra import router as spectra_router
 from app.api.v1.endpoints.evidence import router as evidence_router
 from app.api.v1.endpoints.dpp import router as dpp_router
+from app.api.v1.endpoints.integrity import router as integrity_router
 
 api_router = APIRouter()
 
@@ -26,5 +27,6 @@ api_router.include_router(c2pa_router)
 api_router.include_router(spectra_router)
 api_router.include_router(evidence_router)
 api_router.include_router(dpp_router)
+api_router.include_router(integrity_router)
 
 api_router.include_router(certificate_verify.router, prefix="", tags=["Certificate Verification"])
