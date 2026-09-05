@@ -56,6 +56,7 @@ def init_db():
     from app.db.base import Base
     import app.db.models  # noqa: F401
     import app.db.dpp_models  # noqa: F401
+    import app.db.forensic_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _run_migrations()
@@ -204,6 +205,30 @@ def _run_migrations():
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_dpp_omni_id ON digital_product_passports (omni_id)",
                 "CREATE INDEX IF NOT EXISTS ix_dpp_tenant_id ON digital_product_passports (tenant_id)",
                 "CREATE INDEX IF NOT EXISTS ix_dpp_passport_id ON digital_product_passports (passport_id)",
+            ],
+        ),
+        (
+            "forensic_observations",
+            """
+            CREATE TABLE IF NOT EXISTS forensic_observations (
+                observation_id VARCHAR PRIMARY KEY,
+                omni_id VARCHAR NOT NULL,
+                tenant_id VARCHAR NOT NULL,
+                provider VARCHAR NOT NULL,
+                model VARCHAR NOT NULL,
+                signal VARCHAR NOT NULL,
+                probability REAL NOT NULL,
+                status VARCHAR NOT NULL DEFAULT 'available',
+                details_json TEXT,
+                observed_at TIMESTAMP NOT NULL
+            )
+            """,
+            [
+                "CREATE INDEX IF NOT EXISTS ix_forensic_observations_omni_id ON forensic_observations (omni_id)",
+                "CREATE INDEX IF NOT EXISTS ix_forensic_observations_tenant_id ON forensic_observations (tenant_id)",
+                "CREATE INDEX IF NOT EXISTS ix_forensic_observations_provider ON forensic_observations (provider)",
+                "CREATE INDEX IF NOT EXISTS ix_forensic_observations_signal ON forensic_observations (signal)",
+                "CREATE INDEX IF NOT EXISTS ix_forensic_observations_observed_at ON forensic_observations (observed_at)",
             ],
         ),
     ]
