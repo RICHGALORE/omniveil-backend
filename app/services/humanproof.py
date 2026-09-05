@@ -16,6 +16,7 @@ ALLOWED_EVENT_TYPES = {
     "work_saved",
     "work_exported",
     "ai_tool_disclosed",
+    "contributor_declared",
     "contributor_attested",
     "asset_registered",
     "session_closed",
