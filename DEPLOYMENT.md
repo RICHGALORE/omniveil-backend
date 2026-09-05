@@ -93,3 +93,24 @@ Expected production response after Postgres, persistent storage, and signing sec
 ```
 
 Before accepting uploads, issue one controlled certificate and verify that its `public_key_id` is the configured production key ID, never `OV-ROOT-DEV-001`.
+
+## Executable production proof
+
+Use `scripts/production_proof.py` to replace the controlled-certificate manual check with a full Trust OS proof. The runner validates readiness, fresh ingest, watermark storage, HumanProof continuity and asset binding, Ed25519 certificate identity, public Verify, Registry, Evidence Graph, and Fact Integrity.
+
+```bash
+export OV_API_KEY='YOUR_TENANT_API_KEY'
+export OV_EXPECTED_SIGNING_KEY_ID='OV-ROOT-PROD-001'
+python scripts/production_proof.py --report production-proof-create.json
+```
+
+Then restart or deploy the Render service and recheck the same asset to prove database + persistent disk survival:
+
+```bash
+python scripts/production_proof.py \
+  --recheck-omni-id 'OV-...' \
+  --expected-cert-id '...' \
+  --report production-proof-recheck.json
+```
+
+See `docs/PRODUCTION_PROOF_RUNBOOK.md` for the complete proof conditions, failure semantics, and security boundary.
