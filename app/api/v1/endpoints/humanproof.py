@@ -16,6 +16,10 @@ from app.services.humanproof import (
     serialize_session,
     verify_session_chain,
 )
+from app.services.humanproof_public import (
+    PUBLIC_SESSION_STATUSES,
+    get_public_humanproof_summary as build_public_humanproof_summary,
+)
 
 router = APIRouter(prefix="/humanproof", tags=["HumanProof"])
 
@@ -191,19 +195,27 @@ def get_public_humanproof_summary(
     omni_id: str,
     db: Session = Depends(get_db),
 ):
+    """Return a creator-authorized sanitized public HumanProof timeline."""
+    compact_summary = build_public_humanproof_summary(db, omni_id)
+    if compact_summary is None:
+        # A private HumanProof session is deliberately indistinguishable from an
+        # asset that has no public HumanProof record.
+        raise HTTPException(404, "HumanProof record not found")
+
     session = (
         db.query(HumanProofSession)
         .filter(
             HumanProofSession.omni_id == omni_id,
-            HumanProofSession.status.in_(["complete", "integrity_failed", "incomplete"]),
+            HumanProofSession.status.in_(PUBLIC_SESSION_STATUSES),
         )
-        .order_by(HumanProofSession.closed_at.desc())
+        .order_by(HumanProofSession.closed_at.desc(), HumanProofSession.created_at.desc())
         .first()
     )
     if not session:
         raise HTTPException(404, "HumanProof record not found")
 
     summary = serialize_session(db, session, public=True)
+    summary["privacy_mode"] = compact_summary["privacy_mode"]
     for event in summary["events"]:
         # Public HumanProof exposes cryptographic continuity and safe disclosure
         # summaries, not the creator's raw workflow evidence.
