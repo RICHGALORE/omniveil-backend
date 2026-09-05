@@ -17,6 +17,7 @@ class TrustSignals:
     has_copyright: Optional[bool] = None
     has_license_url: Optional[bool] = None
     is_ai_generated: Optional[bool] = None
+    is_ai_assisted: Optional[bool] = None
     is_ai_disclosed: Optional[bool] = None
     ai_detection_score: Optional[float] = None
     transformation_level: Optional[str] = None
@@ -98,6 +99,9 @@ def compute_trust_score(signals: TrustSignals) -> TrustResult:
         score -= 0.05
         reasons.append("Creator disclosed AI-generated content")
         used.append("is_ai_generated")
+    elif signals.is_ai_assisted is True:
+        reasons.append("Creator disclosed AI-assisted content")
+        used.append("is_ai_assisted")
     if signals.transformation_level:
         level = signals.transformation_level.lower()
         if level == "substantial":
@@ -129,7 +133,7 @@ def _assign_label(score, signals):
     ai = signals.ai_detection_score or 0.0
     if ai >= 0.85:
         return "synthetic" if not signals.is_ai_generated else "ai_assisted"
-    if ai >= 0.40 or signals.is_ai_generated is True:
+    if ai >= 0.40 or signals.is_ai_generated is True or signals.is_ai_assisted is True:
         return "ai_assisted"
     if score >= 0.65:
         return "human_verified"
