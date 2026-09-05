@@ -16,6 +16,9 @@ from app.services.humanproof import (
     serialize_session,
     verify_session_chain,
 )
+from app.services.humanproof_public import (
+    get_public_humanproof_summary as build_public_humanproof_summary,
+)
 
 router = APIRouter(prefix="/humanproof", tags=["HumanProof"])
 
@@ -191,32 +194,10 @@ def get_public_humanproof_summary(
     omni_id: str,
     db: Session = Depends(get_db),
 ):
-    session = (
-        db.query(HumanProofSession)
-        .filter(
-            HumanProofSession.omni_id == omni_id,
-            HumanProofSession.status.in_(["complete", "integrity_failed", "incomplete"]),
-        )
-        .order_by(HumanProofSession.closed_at.desc())
-        .first()
-    )
-    if not session:
+    """Return only creator-authorized, public-safe HumanProof evidence."""
+    summary = build_public_humanproof_summary(db, omni_id)
+    if summary is None:
+        # A private HumanProof session is deliberately indistinguishable from an
+        # asset that has no public HumanProof record.
         raise HTTPException(404, "HumanProof record not found")
-
-    summary = serialize_session(db, session, public=True)
-    for event in summary["events"]:
-        # Public HumanProof exposes cryptographic continuity and safe disclosure
-        # summaries, not the creator's raw workflow evidence.
-        event.pop("payload", None)
-        event.pop("source_name", None)
-        event.pop("creator_id", None)
-
-        location = event.get("location")
-        if location and location.get("level") == "coarse":
-            public_summary = location.get("public_summary")
-            event["location"] = (
-                {"level": "coarse", "public_summary": public_summary}
-                if public_summary
-                else {"level": "coarse"}
-            )
     return summary
