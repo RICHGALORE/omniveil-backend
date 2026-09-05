@@ -11,6 +11,17 @@ from app.db.models import Client
 from app.db.session import SessionLocal
 
 
+FORBIDDEN_PUBLIC_VALUES = (
+    "latitude",
+    "longitude",
+    "private-creator-id",
+    "Private DAW Name",
+    "private_project_name",
+    "private_source_path",
+    "internal evidence note",
+)
+
+
 def _identity():
     token = uuid.uuid4().hex
     return (
@@ -140,7 +151,7 @@ def _complete_humanproof(
     return closed.json()
 
 
-def _assert_public_summary(summary: dict, *, privacy_mode: str = "proof") -> None:
+def _assert_compact_public_summary(summary: dict, *, privacy_mode: str = "proof") -> None:
     assert summary["status"] == "complete"
     assert summary["privacy_mode"] == privacy_mode
     assert summary["event_count"] == 5
@@ -157,17 +168,30 @@ def _assert_public_summary(summary: dict, *, privacy_mode: str = "proof") -> Non
     assert summary["asset_bound"] is True
 
     serialized = json.dumps(summary)
-    for forbidden in (
-        "latitude",
-        "longitude",
-        "private-creator-id",
-        "Private DAW Name",
-        "private_project_name",
-        "private_source_path",
-        "internal evidence note",
-        "evidence_hash",
-        "events",
-    ):
+    for forbidden in (*FORBIDDEN_PUBLIC_VALUES, "evidence_hash", "events"):
+        assert forbidden not in serialized
+
+
+def _assert_sanitized_public_timeline(payload: dict, *, privacy_mode: str) -> None:
+    assert payload["status"] == "complete"
+    assert payload["privacy_mode"] == privacy_mode
+    assert payload["chain_integrity"]["valid"] is True
+    assert payload["event_count"] == 5
+    assert len(payload["events"]) == 5
+
+    first_location = payload["events"][0]["location"]
+    assert first_location == {
+        "level": "precise_private",
+        "public_summary": "private",
+    }
+
+    for event in payload["events"]:
+        assert "payload" not in event
+        assert "source_name" not in event
+        assert "creator_id" not in event
+
+    serialized = json.dumps(payload)
+    for forbidden in FORBIDDEN_PUBLIC_VALUES:
         assert forbidden not in serialized
 
 
@@ -180,22 +204,22 @@ def test_humanproof_summary_is_shared_across_verify_registry_certificate_and_pub
 
         verify = client.get(f"/api/v1/verify/{uploaded['omni_id']}")
         assert verify.status_code == 200, verify.text
-        _assert_public_summary(verify.json()["humanproof"])
+        _assert_compact_public_summary(verify.json()["humanproof"])
 
         registry = client.get(f"/api/v1/registry/assets/{uploaded['omni_id']}")
         assert registry.status_code == 200, registry.text
-        _assert_public_summary(registry.json()["humanproof"])
+        _assert_compact_public_summary(registry.json()["humanproof"])
 
         certificate = client.get(
             f"/api/v1/certificates/{uploaded['cert_id']}",
             headers={"X-API-Key": raw_key},
         )
         assert certificate.status_code == 200, certificate.text
-        _assert_public_summary(certificate.json()["humanproof"])
+        _assert_compact_public_summary(certificate.json()["humanproof"])
 
         public_hp = client.get(f"/api/v1/humanproof/assets/{uploaded['omni_id']}/public")
         assert public_hp.status_code == 200, public_hp.text
-        _assert_public_summary(public_hp.json())
+        _assert_sanitized_public_timeline(public_hp.json(), privacy_mode="proof")
 
 
 def test_private_humanproof_is_hidden_across_every_public_surface():
@@ -225,16 +249,23 @@ def test_private_humanproof_is_hidden_across_every_public_surface():
         assert public_hp.json()["detail"] == "HumanProof record not found"
 
 
-def test_public_mode_uses_same_safe_summary_boundary_until_selected_evidence_publishing_exists():
+def test_public_mode_keeps_sanitized_timeline_until_selected_evidence_publishing_exists():
     raw_key, tenant_id, email = _identity()
     with TestClient(main.app, raise_server_exceptions=False) as client:
         _ensure_client(raw_key, tenant_id, email)
         uploaded = _upload(client, raw_key, "public-mode-humanproof.png")
         _complete_humanproof(client, raw_key, uploaded["omni_id"], privacy_mode="public")
 
+        verify = client.get(f"/api/v1/verify/{uploaded['omni_id']}")
+        assert verify.status_code == 200, verify.text
+        _assert_compact_public_summary(
+            verify.json()["humanproof"],
+            privacy_mode="public",
+        )
+
         response = client.get(f"/api/v1/humanproof/assets/{uploaded['omni_id']}/public")
         assert response.status_code == 200, response.text
-        _assert_public_summary(response.json(), privacy_mode="public")
+        _assert_sanitized_public_timeline(response.json(), privacy_mode="public")
 
 
 def test_assets_without_humanproof_return_explicit_null_summary():
