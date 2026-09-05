@@ -60,7 +60,13 @@ def _upload(client: TestClient, raw_key: str, filename: str = "humanproof-public
     return response.json()
 
 
-def _complete_humanproof(client: TestClient, raw_key: str, omni_id: str) -> dict:
+def _complete_humanproof(
+    client: TestClient,
+    raw_key: str,
+    omni_id: str,
+    *,
+    privacy_mode: str = "proof",
+) -> dict:
     headers = {"X-API-Key": raw_key}
     started = client.post(
         "/api/v1/humanproof/sessions",
@@ -74,7 +80,10 @@ def _complete_humanproof(client: TestClient, raw_key: str, omni_id: str) -> dict
                 "latitude": 36.1716,
                 "longitude": -115.1391,
             },
-            "payload": {"private_project_name": "Do Not Publish"},
+            "payload": {
+                "private_project_name": "Do Not Publish",
+                "privacy_mode": privacy_mode,
+            },
         },
     )
     assert started.status_code == 201, started.text
@@ -131,8 +140,9 @@ def _complete_humanproof(client: TestClient, raw_key: str, omni_id: str) -> dict
     return closed.json()
 
 
-def _assert_public_summary(summary: dict) -> None:
+def _assert_public_summary(summary: dict, *, privacy_mode: str = "proof") -> None:
     assert summary["status"] == "complete"
+    assert summary["privacy_mode"] == privacy_mode
     assert summary["event_count"] == 5
     assert summary["chain_integrity"] == {"valid": True, "event_count": 5}
     assert summary["ai_disclosure"] == {
@@ -161,12 +171,12 @@ def _assert_public_summary(summary: dict) -> None:
         assert forbidden not in serialized
 
 
-def test_humanproof_summary_is_shared_across_verify_registry_and_certificate_without_private_evidence():
+def test_humanproof_summary_is_shared_across_verify_registry_certificate_and_public_endpoint_without_private_evidence():
     raw_key, tenant_id, email = _identity()
     with TestClient(main.app, raise_server_exceptions=False) as client:
         _ensure_client(raw_key, tenant_id, email)
         uploaded = _upload(client, raw_key)
-        _complete_humanproof(client, raw_key, uploaded["omni_id"])
+        _complete_humanproof(client, raw_key, uploaded["omni_id"], privacy_mode="proof")
 
         verify = client.get(f"/api/v1/verify/{uploaded['omni_id']}")
         assert verify.status_code == 200, verify.text
@@ -182,6 +192,49 @@ def test_humanproof_summary_is_shared_across_verify_registry_and_certificate_wit
         )
         assert certificate.status_code == 200, certificate.text
         _assert_public_summary(certificate.json()["humanproof"])
+
+        public_hp = client.get(f"/api/v1/humanproof/assets/{uploaded['omni_id']}/public")
+        assert public_hp.status_code == 200, public_hp.text
+        _assert_public_summary(public_hp.json())
+
+
+def test_private_humanproof_is_hidden_across_every_public_surface():
+    raw_key, tenant_id, email = _identity()
+    with TestClient(main.app, raise_server_exceptions=False) as client:
+        _ensure_client(raw_key, tenant_id, email)
+        uploaded = _upload(client, raw_key, "private-humanproof.png")
+        _complete_humanproof(client, raw_key, uploaded["omni_id"], privacy_mode="private")
+
+        verify = client.get(f"/api/v1/verify/{uploaded['omni_id']}")
+        assert verify.status_code == 200, verify.text
+        assert verify.json()["humanproof"] is None
+
+        registry = client.get(f"/api/v1/registry/assets/{uploaded['omni_id']}")
+        assert registry.status_code == 200, registry.text
+        assert registry.json()["humanproof"] is None
+
+        certificate = client.get(
+            f"/api/v1/certificates/{uploaded['cert_id']}",
+            headers={"X-API-Key": raw_key},
+        )
+        assert certificate.status_code == 200, certificate.text
+        assert certificate.json()["humanproof"] is None
+
+        public_hp = client.get(f"/api/v1/humanproof/assets/{uploaded['omni_id']}/public")
+        assert public_hp.status_code == 404
+        assert public_hp.json()["detail"] == "HumanProof record not found"
+
+
+def test_public_mode_uses_same_safe_summary_boundary_until_selected_evidence_publishing_exists():
+    raw_key, tenant_id, email = _identity()
+    with TestClient(main.app, raise_server_exceptions=False) as client:
+        _ensure_client(raw_key, tenant_id, email)
+        uploaded = _upload(client, raw_key, "public-mode-humanproof.png")
+        _complete_humanproof(client, raw_key, uploaded["omni_id"], privacy_mode="public")
+
+        response = client.get(f"/api/v1/humanproof/assets/{uploaded['omni_id']}/public")
+        assert response.status_code == 200, response.text
+        _assert_public_summary(response.json(), privacy_mode="public")
 
 
 def test_assets_without_humanproof_return_explicit_null_summary():
