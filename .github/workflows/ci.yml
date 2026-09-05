@@ -31,8 +31,10 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pytest
 
-      - name: Compile production proof runner
-        run: python -m py_compile scripts/production_proof.py
+      - name: Compile production proof runners
+        run: |
+          python -m py_compile scripts/production_proof.py
+          python -m py_compile scripts/production_forensic_proof.py
 
       - name: Run test suite
         env:
