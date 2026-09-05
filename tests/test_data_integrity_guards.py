@@ -62,18 +62,24 @@ def _post_upload(client: TestClient, data: bytes, creator: str):
     )
 
 
-def test_duplicate_same_tenant_cannot_overwrite_original_facts():
+def test_duplicate_same_tenant_reuses_registration_without_overwrite():
     with TestClient(main.app, raise_server_exceptions=False) as client:
         _ensure_client()
         data = _png_bytes()
 
         first = _post_upload(client, data, "Original Creator")
         assert first.status_code == 200, first.text
-        omni_id = first.json()["omni_id"]
+        first_body = first.json()
+        omni_id = first_body["omni_id"]
+        asset_id = first_body["asset_id"]
 
         duplicate = _post_upload(client, data, "Changed Creator")
-        assert duplicate.status_code == 409, duplicate.text
-        assert omni_id in duplicate.json()["detail"]
+        assert duplicate.status_code == 200, duplicate.text
+        duplicate_body = duplicate.json()
+        assert duplicate_body["registration_reused"] is True
+        assert duplicate_body["omni_id"] == omni_id
+        assert duplicate_body["asset_id"] == asset_id
+        assert duplicate_body["creator_name"] == "Original Creator"
 
         report = client.get(
             f"/api/v1/assets/{omni_id}/report",
