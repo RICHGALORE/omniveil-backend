@@ -82,8 +82,11 @@ def test_full_trust_os_asset_flow_upload_humanproof_registry_verify_certificate_
     async def no_image_detector(*args, **kwargs):
         return None
 
+    async def no_synthetic_detectors(*args, **kwargs):
+        return []
+
     monkeypatch.setattr(ingest_endpoint.hive, "detect_ai_image", no_image_detector)
-    monkeypatch.setattr(spectra_endpoint.hive, "detect_ai_image", no_image_detector)
+    monkeypatch.setattr(spectra_endpoint, "run_synthetic_detectors", no_synthetic_detectors)
 
     provenance = {
         "creator_name": "Marlon Rich Galore Cooper",
@@ -225,4 +228,5 @@ def test_full_trust_os_asset_flow_upload_humanproof_registry_verify_certificate_
         assert spectra_body["signals"]["humanproof"]["chain_valid"] is True
         assert spectra_body["signals"]["content_credentials"]["risk"] == "neutral"
         assert spectra_body["signals"]["synthetic_detection"]["risk"] == "unknown"
+        assert spectra_body["signals"]["synthetic_detector_summary"]["provider_count"] == 0
         assert spectra_body["verdict"] in {"no_major_flags", "review_recommended"}
