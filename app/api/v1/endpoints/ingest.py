@@ -29,7 +29,7 @@ from app.db import (
     Contributor,
     LiveSplitSession,
 )
-from app.db.models import Client
+from app.db.models import Asset, Client
 
 router = APIRouter()
 
@@ -40,7 +40,13 @@ WATERMARKED_DIR = "uploads/watermarked"
 CERTIFICATES_DIR = "uploads/certificates"
 MANIFESTS_DIR = "uploads/manifests"
 
-# Ensure Render/local upload directories exist before writing files.
+_AI_DISCLOSURE_VALUES = {"human", "ai_assisted", "ai_generated", "unknown"}
+_AI_DISCLOSURE_ALIASES = {
+    "ai": "ai_generated",
+    "mixed": "ai_assisted",
+    "assisted": "ai_assisted",
+}
+
 for _dir in (ORIGINALS_DIR, WATERMARKED_DIR, CERTIFICATES_DIR, MANIFESTS_DIR):
     os.makedirs(_dir, exist_ok=True)
 
@@ -48,6 +54,58 @@ if settings.hive_api_key:
     hive.set_key(settings.hive_api_key)
 if settings.sightengine_user and settings.sightengine_secret:
     hive.set_sightengine(settings.sightengine_user, settings.sightengine_secret)
+
+
+def _optional_text(value):
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _normalize_ai_disclosure(provenance: dict) -> dict:
+    raw_tools = provenance.get("ai_tools_used") or []
+    if not isinstance(raw_tools, list):
+        raise ValueError("ai_tools_used must be a JSON array")
+    if any(not isinstance(tool, str) for tool in raw_tools):
+        raise ValueError("ai_tools_used entries must be strings")
+    ai_tools = [tool.strip() for tool in raw_tools if tool.strip()]
+
+    explicit = _optional_text(provenance.get("ai_disclosure"))
+    value = None
+    if explicit:
+        value = _AI_DISCLOSURE_ALIASES.get(explicit.lower(), explicit.lower())
+        if value not in _AI_DISCLOSURE_VALUES:
+            raise ValueError(
+                "ai_disclosure must be human, ai_assisted, ai_generated, or unknown"
+            )
+    else:
+        legacy_generated = provenance.get("is_ai_generated")
+        if legacy_generated not in (None, True, False):
+            raise ValueError("is_ai_generated must be true, false, or null")
+        if legacy_generated is True:
+            value = "ai_generated"
+        elif legacy_generated is False:
+            value = "ai_assisted" if ai_tools else "human"
+        elif ai_tools:
+            value = "ai_assisted"
+
+    if value == "human" and ai_tools:
+        raise ValueError("ai_disclosure cannot be human when ai_tools_used are declared")
+    if value == "unknown" and ai_tools:
+        raise ValueError("ai_disclosure cannot be unknown when specific AI tools are declared")
+
+    generated = True if value == "ai_generated" else False if value in {"human", "ai_assisted"} else None
+    assisted = True if value == "ai_assisted" else False if value in {"human", "ai_generated"} else None
+
+    return {
+        "value": value,
+        "is_generated": generated,
+        "is_assisted": assisted,
+        # This flag means AI use itself was disclosed, not merely that a form was completed.
+        "is_disclosed": value in {"ai_assisted", "ai_generated"},
+        "tools": ai_tools,
+    }
 
 
 def _provenance_event(omni_id, event_type, description, tool_used, actor, now):
@@ -75,6 +133,75 @@ def _provenance_event(omni_id, event_type, description, tool_used, actor, now):
     )
 
 
+def _existing_ingest_response(db: Session, asset: Asset) -> dict:
+    """Return the original registration facts for an idempotent re-upload.
+
+    A repeated upload may refresh metadata analysis, but it must never rewrite
+    identity, rights, certificate, or authorship facts simply because the same
+    bytes were submitted again.
+    """
+    certificate = (
+        db.query(Certificate)
+        .filter(Certificate.omni_id == asset.omni_id)
+        .order_by(Certificate.issued_at.desc())
+        .first()
+    )
+    cert_payload = {}
+    if certificate:
+        try:
+            cert_payload = json.loads(certificate.cert_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            cert_payload = {}
+
+    return {
+        "omni_id": asset.omni_id,
+        "asset_id": asset.asset_id,
+        "cert_id": certificate.cert_id if certificate else None,
+        "filename": asset.filename,
+        "sha256": asset.sha256,
+        "blake3": asset.blake3,
+        "phash": asset.phash,
+        "trust_score": asset.trust_score,
+        "content_label": asset.content_label,
+        "label_reasons": json.loads(asset.label_reasons or "[]"),
+        "ai_detection_score": asset.ai_detection_score,
+        "ai_disclosure": asset.ai_disclosure,
+        "watermark_applied": asset.watermark_applied,
+        "watermark_visible": asset.watermark_visible,
+        "watermark_invisible": asset.watermark_invisible,
+        "creator_name": asset.creator_name,
+        "copyright_owner": asset.copyright_owner,
+        "license_type": asset.license_type,
+        "original_path": asset.original_path,
+        "watermarked_path": asset.watermarked_path,
+        "certificate_path": asset.certificate_path,
+        "manifest_path": asset.manifest_path,
+        "registry_url": asset.registry_url,
+        "created_at": asset.created_at.isoformat() if asset.created_at else None,
+        "mime_type": asset.file_type,
+        "asset_type": asset.asset_type,
+        "file_size_bytes": asset.file_size_bytes,
+        "certificate_class": asset.certificate_class,
+        "certificate_class_label": asset.certificate_class_label,
+        "copyright_readiness": cert_payload.get("copyright_readiness") or {
+            "score": asset.copyright_readiness_score,
+            "label": asset.copyright_readiness_label,
+            "certificate_class": asset.certificate_class,
+        },
+        "section_a_human_contributions": cert_payload.get(
+            "section_a_human_contributions", {"contributions": [], "contributors": []}
+        ),
+        "section_b_ai_contributions": cert_payload.get(
+            "section_b_ai_contributions", {"ai_tools_used": []}
+        ),
+        "section_c_ownership_splits": cert_payload.get(
+            "section_c_ownership_splits", {"copyright_owner": asset.copyright_owner or "", "splits": []}
+        ),
+        "legal_disclaimer": cert_payload.get("legal_disclaimer"),
+        "registration_reused": True,
+    }
+
+
 @router.post("/upload")
 async def ingest_upload(
     file: UploadFile = File(...),
@@ -94,11 +221,68 @@ async def ingest_upload(
     if not isinstance(provenance, dict) or not isinstance(options, dict):
         raise HTTPException(400, "provenance_json and options_json must be JSON objects")
 
-    # ── Step 2: Hashes ──────────────────────────────────────────────────────
+    try:
+        ai_state = _normalize_ai_disclosure(provenance)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    ai_disclosure = ai_state["value"]
+    is_ai_generated = ai_state["is_generated"]
+    is_ai_assisted = ai_state["is_assisted"]
+    is_ai_disclosed = ai_state["is_disclosed"]
+    ai_tools_used = ai_state["tools"]
+
+    creator_name = _optional_text(provenance.get("creator_name"))
+    copyright_owner = _optional_text(provenance.get("copyright_owner"))
+    license_type = _optional_text(provenance.get("license_type"))
+
+    # Cryptographic identity is deterministic per tenant + file bytes.
     sha256 = sha256_bytes(data)
     b3 = blake3_bytes(data)
+    omni_id = generate_omni_id(tenant.tenant_id, sha256)
 
-    # ── Step 3: Metadata + pHash ────────────────────────────────────────────
+    existing = (
+        db.query(Asset)
+        .filter(
+            Asset.omni_id == omni_id,
+            Asset.tenant_id == tenant.tenant_id,
+        )
+        .first()
+    )
+    if existing:
+        # Idempotent replay: refresh only derived metadata analysis. The original
+        # registration facts remain authoritative and are returned unchanged.
+        try:
+            existing_mime = existing.file_type or file.content_type or "application/octet-stream"
+            extraction = extract_metadata_service(
+                data,
+                filename=existing.filename or file.filename or "file",
+                mime_type=existing_mime,
+            )
+            record = persist_asset_metadata(
+                db,
+                asset_id=existing.asset_id,
+                tenant_id=tenant.tenant_id,
+                omni_id=existing.omni_id,
+                extraction=extraction,
+            )
+            raw, normalized, derived = split_layers(extraction)
+            persist_anomaly_score(
+                db,
+                record,
+                raw=raw,
+                normalized=normalized,
+                derived=derived,
+                mime_type=existing_mime,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Metadata re-analysis skipped for existing omni_id=%s: %s",
+                existing.omni_id,
+                exc,
+            )
+        return _existing_ingest_response(db, existing)
+
     mime_type = file.content_type or "application/octet-stream"
     meta = extract_metadata(data, mime_type)
     exif = meta.get("exif", {})
@@ -107,20 +291,16 @@ async def ingest_upload(
     if mime_type.startswith("image/"):
         ph = phash_image(data)
 
-    # ── Step 4: Omni ID ─────────────────────────────────────────────────────
-    omni_id = generate_omni_id(tenant.tenant_id, sha256)
     asset_id = str(uuid.uuid4())
     now = datetime.utcnow()
 
     ext = os.path.splitext(file.filename or "file")[1] or ".bin"
     original_filename = file.filename or f"file{ext}"
 
-    # ── Step 1: Save original ───────────────────────────────────────────────
     original_path = os.path.join(ORIGINALS_DIR, f"{omni_id}{ext}")
     with open(original_path, "wb") as f:
         f.write(data)
 
-    # ── AI detection ────────────────────────────────────────────────────────
     ai_score = None
     if mime_type.startswith("image/"):
         try:
@@ -133,7 +313,6 @@ async def ingest_upload(
         except Exception:
             ai_score = None
 
-    # ── Watermarking ────────────────────────────────────────────────────────
     watermarked = data
     wm_visible = False
     wm_invisible = False
@@ -152,20 +331,17 @@ async def ingest_upload(
         with open(watermarked_path, "wb") as f:
             f.write(watermarked)
 
-    # ── Extract human authorship + copyright readiness fields from provenance ──
-    human_creative_direction   = provenance.get("human_creative_direction")
-    human_editing_present      = provenance.get("human_editing_present")
-    human_arrangement_present  = provenance.get("human_arrangement_present")
-    human_lyrics_present       = provenance.get("human_lyrics_present")
-    human_performance_present  = provenance.get("human_performance_present")
+    human_creative_direction = provenance.get("human_creative_direction")
+    human_editing_present = provenance.get("human_editing_present")
+    human_arrangement_present = provenance.get("human_arrangement_present")
+    human_lyrics_present = provenance.get("human_lyrics_present")
+    human_performance_present = provenance.get("human_performance_present")
     human_transformation_present = provenance.get("human_transformation_present")
-    ai_disclosure_complete     = provenance.get("ai_disclosure_complete")
-    ai_tools_used              = provenance.get("ai_tools_used") or []  # list[str]
-    ai_modification_by_human   = provenance.get("ai_modification_by_human")
-    human_authorship_summary   = provenance.get("human_authorship_summary")
-    contributor_count          = provenance.get("contributor_count")    # int | None
+    ai_disclosure_complete = provenance.get("ai_disclosure_complete")
+    ai_modification_by_human = provenance.get("ai_modification_by_human")
+    human_authorship_summary = provenance.get("human_authorship_summary")
+    contributor_count = provenance.get("contributor_count")
 
-    # ── Trust score ─────────────────────────────────────────────────────────
     human_contribution_count = sum([
         bool(human_arrangement_present),
         bool(human_editing_present),
@@ -180,12 +356,13 @@ async def ingest_upload(
     signals = TrustSignals(
         has_exif=bool(exif),
         has_gps=bool(exif.get("GPS GPSLatitude")),
-        has_creator_name=bool(provenance.get("creator_name")),
+        has_creator_name=bool(creator_name),
         has_creator_org=bool(provenance.get("creator_org")),
         has_copyright=bool(provenance.get("copyright_notice")),
         has_license_url=bool(provenance.get("license_url")),
-        is_ai_generated=provenance.get("is_ai_generated"),
-        is_ai_disclosed=provenance.get("is_ai_generated") is not None,
+        is_ai_generated=is_ai_generated,
+        is_ai_assisted=is_ai_assisted,
+        is_ai_disclosed=is_ai_disclosed,
         ai_detection_score=ai_score,
         invisible_wm_verified=True if wm_invisible else None,
         invisible_wm_confidence=1.0 if wm_invisible else None,
@@ -195,7 +372,6 @@ async def ingest_upload(
     )
     trust = compute_trust_score(signals)
 
-    # ── Live Split / contributor metadata from provenance ─────────────────────
     live_split = provenance.get("live_split") or {}
     if not isinstance(live_split, dict):
         raise HTTPException(400, "live_split must be a JSON object")
@@ -262,7 +438,6 @@ async def ingest_upload(
     if contributors and contributor_count is None:
         contributor_count = len(contributors)
 
-    # ── Copyright readiness score ────────────────────────────────────────────
     cr_signals = AuthorshipSignals(
         human_creative_direction=human_creative_direction,
         human_editing_present=human_editing_present,
@@ -274,23 +449,11 @@ async def ingest_upload(
         ai_tools_used=ai_tools_used,
         ai_modification_by_human=ai_modification_by_human,
         ai_detection_score=ai_score,
-        is_ai_disclosed=provenance.get("is_ai_generated") is not None,
+        is_ai_disclosed=is_ai_disclosed,
         human_contributor_count=contributor_count,
     )
     cr = compute_copyright_readiness(cr_signals)
 
-    if provenance.get("is_ai_generated") is True:
-        ai_disclosure = "ai"
-    elif provenance.get("is_ai_generated") is False:
-        ai_disclosure = "human"
-    else:
-        ai_disclosure = None
-
-    creator_name = provenance.get("creator_name")
-    copyright_owner = provenance.get("copyright_owner") or creator_name
-    license_type = provenance.get("license_type")
-
-    # ── Step 6: Build + sign certificate ────────────────────────────────────
     cert_id = str(uuid.uuid4())
     cert_ctx = CertificateContext(
         cert_id=cert_id,
@@ -339,8 +502,6 @@ async def ingest_upload(
         "created_at": now.isoformat(),
     }
 
-    # Development Trust Authority keypair.
-    # Production must use OV private keys from AWS KMS / Secrets Manager / offline vault.
     trust_keys = get_or_create_dev_trust_keypair()
 
     signed_cert_payload = ed25519_sign_certificate(
@@ -348,7 +509,7 @@ async def ingest_upload(
         metadata=certificate_metadata_lock,
         private_key_b64=trust_keys["private_key_b64"],
         public_key_b64=trust_keys["public_key_b64"],
-        public_key_id="OV-ROOT-DEV-001",
+        public_key_id=trust_keys["public_key_id"],
     )
 
     signed_cert_payload["metadata_lock"] = certificate_metadata_lock
@@ -362,7 +523,6 @@ async def ingest_upload(
     with open(certificate_path, "w") as f:
         f.write(cert_json_str)
 
-    # ── Step 7: Build + write provenance manifest ────────────────────────────
     registry_url = f"https://omniveil-backend.onrender.com/api/v1/registry/assets/{omni_id}"
     manifest = {
         "manifest_version": "1.1",
@@ -391,7 +551,6 @@ async def ingest_upload(
         "certificate_path": certificate_path,
         "created_at": now.isoformat(),
         "registry_url": registry_url,
-        # ── Creative provenance documentation ────────────────────────────────
         "certificate_class": cert_payload["certificate_class"],
         "certificate_class_label": cert_payload["certificate_class_label"],
         "copyright_readiness_score": cr.score,
@@ -411,7 +570,6 @@ async def ingest_upload(
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
 
-    # ── Step 5: Save asset to DB ─────────────────────────────────────────────
     save_asset(db, {
         "omni_id": omni_id,
         "asset_id": asset_id,
@@ -440,14 +598,12 @@ async def ingest_upload(
         "license_type": license_type,
         "registry_url": registry_url,
         "metadata_json": json.dumps(meta),
-        # ── Human authorship evidence ────────────────────────────────────────
         "human_creative_direction": human_creative_direction,
         "human_editing_present": human_editing_present,
         "human_arrangement_present": human_arrangement_present,
         "human_lyrics_present": human_lyrics_present,
         "human_performance_present": human_performance_present,
         "human_transformation_present": human_transformation_present,
-        # ── Copyright readiness ──────────────────────────────────────────────
         "copyright_readiness_score": cr.score,
         "copyright_readiness_label": cr.label,
         "certificate_class": cr.certificate_class,
@@ -458,7 +614,6 @@ async def ingest_upload(
         "human_authorship_summary": human_authorship_summary,
     })
 
-    # ── Step 6: Certificate DB record ────────────────────────────────────────
     db.add(Certificate(
         cert_id=cert_id,
         omni_id=omni_id,
@@ -503,7 +658,6 @@ async def ingest_upload(
             session_hash=sha256_bytes(contributors_json.encode()),
         ))
 
-    # ── Provenance events (immutable audit trail) ────────────────────────────
     actor = creator_name or "system"
     db.add(_provenance_event(
         omni_id, "upload",
@@ -528,10 +682,6 @@ async def ingest_upload(
 
     db.commit()
 
-    # ── Metadata Intelligence Commit 2: persist normalized extraction ─────────
-    # Runs AFTER the asset is durably committed so a metadata-persistence failure
-    # can never roll back or fail the upload. Extraction-only inputs; no change
-    # to the upload response shape, Live Split, certificates, registry or verify.
     try:
         extraction = extract_metadata_service(
             data, filename=original_filename, mime_type=mime_type
@@ -543,17 +693,13 @@ async def ingest_upload(
             omni_id=omni_id,
             extraction=extraction,
         )
-        # Commit 4: compute + persist the deterministic anomaly score from the
-        # layers we just persisted. Runs after persistence so an anomaly failure
-        # can never roll back the metadata or the upload; the upload response
-        # shape is unchanged (anomaly data is served by the /anomalies endpoint).
         raw, normalized, derived = split_layers(extraction)
         persist_anomaly_score(
             db, record,
             raw=raw, normalized=normalized, derived=derived,
             mime_type=mime_type,
         )
-    except Exception as exc:  # never break the upload on metadata persistence
+    except Exception as exc:
         logger.warning(
             "Metadata persistence skipped for omni_id=%s: %s", omni_id, exc
         )
@@ -586,7 +732,6 @@ async def ingest_upload(
         "mime_type": mime_type,
         "asset_type": mime_type.split("/")[0] if "/" in mime_type else "file",
         "file_size_bytes": len(data),
-        # ── Copyright readiness ──────────────────────────────────────────────
         "certificate_class": cert_payload["certificate_class"],
         "certificate_class_label": cert_payload["certificate_class_label"],
         "copyright_readiness": cert_payload["copyright_readiness"],
@@ -594,4 +739,5 @@ async def ingest_upload(
         "section_b_ai_contributions": cert_payload["section_b_ai_contributions"],
         "section_c_ownership_splits": cert_payload["section_c_ownership_splits"],
         "legal_disclaimer": cert_payload["legal_disclaimer"],
+        "registration_reused": False,
     }

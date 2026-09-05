@@ -26,12 +26,8 @@ def _set_production(monkeypatch, keys=None, key_id="OV-ROOT-PROD-TEST-001"):
 
 def test_production_signing_refuses_missing_key_material(monkeypatch):
     _set_production(monkeypatch, keys=None, key_id=None)
-
     with pytest.raises(RuntimeError, match="Production certificate signing is not configured"):
         get_trust_signing_material()
-
-    # The historical ingest hook must also fail closed in production rather
-    # than creating .secrets/ov_root_dev_keypair.json.
     with pytest.raises(RuntimeError, match="Production certificate signing is not configured"):
         get_or_create_dev_trust_keypair()
 
@@ -46,12 +42,11 @@ def test_production_signing_refuses_mismatched_keypair(monkeypatch):
             "public_key_b64": second["public_key_b64"],
         },
     )
-
     with pytest.raises(RuntimeError, match="public/private keys do not match"):
         get_trust_signing_material()
 
 
-def test_production_signing_uses_configured_root_and_overrides_legacy_dev_id(monkeypatch):
+def test_production_signing_uses_configured_root_and_authoritative_key_id(monkeypatch):
     keys = generate_ed25519_keypair()
     _set_production(monkeypatch, keys=keys, key_id="OV-ROOT-PROD-TEST-001")
 
@@ -59,10 +54,10 @@ def test_production_signing_uses_configured_root_and_overrides_legacy_dev_id(mon
     assert material["environment"] == "production"
     assert material["public_key_id"] == "OV-ROOT-PROD-TEST-001"
 
-    # Current ingest still calls the historical helper and explicitly passes
-    # OV-ROOT-DEV-001. Both compatibility paths must remain production-safe.
     ingest_keys = get_or_create_dev_trust_keypair()
-    assert ingest_keys == keys
+    assert ingest_keys["private_key_b64"] == keys["private_key_b64"]
+    assert ingest_keys["public_key_b64"] == keys["public_key_b64"]
+    assert ingest_keys["public_key_id"] == "OV-ROOT-PROD-TEST-001"
 
     metadata = {"omni_id": "OV-PROD-TEST", "sha256": "a" * 64}
     signed = sign_certificate(
@@ -70,7 +65,7 @@ def test_production_signing_uses_configured_root_and_overrides_legacy_dev_id(mon
         metadata=metadata,
         private_key_b64=ingest_keys["private_key_b64"],
         public_key_b64=ingest_keys["public_key_b64"],
-        public_key_id="OV-ROOT-DEV-001",
+        public_key_id=ingest_keys["public_key_id"],
     )
     assert signed["public_key_id"] == "OV-ROOT-PROD-TEST-001"
     assert signed["signature_algorithm"] == "Ed25519"

@@ -18,7 +18,7 @@ from app.services.copyright_readiness import CopyrightReadinessResult, LEGAL_DIS
 CERTIFICATE_CLASSES = {
     "standard": {
         "label": "Standard Authorship Certificate",
-        "description": "Fully human-authored work with no AI tools used or detected.",
+        "description": "Standard authorship record with no AI tools declared in the available evidence.",
     },
     "hybrid_authorship": {
         "label": "Hybrid Authorship Certificate",
@@ -30,7 +30,7 @@ CERTIFICATE_CLASSES = {
     },
     "ai_assisted": {
         "label": "AI-Assisted Authorship Certificate",
-        "description": "AI tools were used under human creative direction; human modification of AI output is documented.",
+        "description": "AI tools were used under human creative direction; human modification of AI output is documented when declared.",
     },
 }
 
@@ -65,7 +65,7 @@ class CertificateContext:
     creator_name: Optional[str] = None
     copyright_owner: Optional[str] = None
     license_type: Optional[str] = None
-    ai_disclosure: Optional[str] = None    # "human" | "ai" | "mixed" | None
+    ai_disclosure: Optional[str] = None
 
     # Human authorship evidence
     human_creative_direction: Optional[bool] = None
@@ -87,7 +87,7 @@ class CertificateContext:
     contributors: List[dict] = field(default_factory=list)
 
 
-# ── Public builder ─────────────────────────────────────────────────────────────
+# ── Public builder ──────────────────────────────────────────────────────────────
 
 def build_certificate(ctx: CertificateContext) -> dict:
     """
@@ -156,7 +156,7 @@ def build_certificate(ctx: CertificateContext) -> dict:
 def _build_section_a(ctx: CertificateContext, cert_class: str) -> dict:
     """
     Section A — Human Creative Contributions.
-    Documents what humans did, not who owns it.
+    Documents only positively declared human activity, not who owns it.
     """
     field_values = [
         ctx.human_creative_direction,
@@ -176,13 +176,6 @@ def _build_section_a(ctx: CertificateContext, cert_class: str) -> dict:
                 "present": present,
             })
 
-    # For standard certificates confirm all human, no AI
-    if cert_class == "standard" and not contributions:
-        contributions = [
-            {"type": type_key, "label": label, "present": True}
-            for type_key, label in _HUMAN_CONTRIBUTION_TYPES[:3]  # direction, editing, arrangement
-        ]
-
     # Per-contributor creative breakdown (populated for live_split)
     contributor_rows = []
     for c in ctx.contributors:
@@ -194,17 +187,10 @@ def _build_section_a(ctx: CertificateContext, cert_class: str) -> dict:
             row["creative_contribution_pct"] = c["creative_contribution_pct"]
         contributor_rows.append(row)
 
-    # Fall back to primary creator if no contributor rows
-    if not contributor_rows and ctx.creator_name:
-        contributor_rows.append({
-            "contributor_name": ctx.creator_name,
-            "role": "primary creator",
-        })
-
     return {
         "section": "A",
         "label": "Human Creative Contributions",
-        "description": "Creative work performed by human author(s) — not an ownership declaration.",
+        "description": "Creative work explicitly recorded for human author(s) — not an ownership declaration.",
         "contributions": contributions,
         "contributors": contributor_rows,
         "summary": ctx.human_authorship_summary or "",
@@ -214,17 +200,17 @@ def _build_section_a(ctx: CertificateContext, cert_class: str) -> dict:
 def _build_section_b(ctx: CertificateContext, cert_class: str) -> dict:
     """
     Section B — AI-Assisted Contributions.
-    Documents what AI tools did.  Empty for 'standard' certificates.
+    Documents AI-tool evidence and disclosure without inferring absence.
     """
     if cert_class == "standard":
         return {
             "section": "B",
             "label": "AI-Assisted Contributions",
-            "description": "No AI tools used or detected.",
+            "description": "No AI tools are declared in this certificate record. Detector evidence is reported separately when available.",
             "ai_tools_used": [],
-            "ai_disclosure_complete": None,
+            "ai_disclosure_complete": ctx.ai_disclosure_complete,
             "ai_modification_by_human": None,
-            "ai_detection_score": None,
+            "ai_detection_score": ctx.ai_detection_score,
         }
 
     detection_pct = (
@@ -236,7 +222,7 @@ def _build_section_b(ctx: CertificateContext, cert_class: str) -> dict:
     section: dict = {
         "section": "B",
         "label": "AI-Assisted Contributions",
-        "description": "Portions of this work generated or assisted by AI tools.",
+        "description": "Portions of this work are declared or detected as generated or assisted by AI tools.",
         "ai_tools_used": ctx.ai_tools_used or [],
         "ai_disclosure_complete": ctx.ai_disclosure_complete,
         "ai_modification_by_human": ctx.ai_modification_by_human,
@@ -247,18 +233,18 @@ def _build_section_b(ctx: CertificateContext, cert_class: str) -> dict:
     # Class-specific notes
     if cert_class == "ai_assisted":
         section["note"] = (
-            "AI tools were used under human creative direction. "
-            "Human modification of AI output has been documented."
+            "AI tools were used in the recorded workflow. Human direction or modification "
+            "is shown only when explicitly documented."
         )
     elif cert_class == "hybrid_authorship":
         section["note"] = (
-            "AI tools contributed to the creative output alongside human authorship. "
-            "Both human and AI contributions are documented separately."
+            "AI tools contributed to the creative output alongside documented human authorship. "
+            "Human and AI contributions are recorded separately."
         )
     elif cert_class == "live_split":
         section["note"] = (
             "AI tool usage per contributor is reflected in the AI-Assisted % "
-            "column of Section C."
+            "column of Section C when declared."
         )
 
     return section
@@ -267,11 +253,11 @@ def _build_section_b(ctx: CertificateContext, cert_class: str) -> dict:
 def _build_section_c(ctx: CertificateContext, cert_class: str) -> dict:
     """
     Section C — Ownership Splits.
-    Legal ownership declarations, entirely separate from creative contribution %.
-    For live_split: three columns per row (creative %, ownership %, AI-assisted %).
+    Records explicit ownership declarations only. It never infers ownership
+    from creator attribution and never invents a 100% split.
     """
     note = (
-        "Ownership splits represent legal ownership declarations and are separate "
+        "Ownership information represents recorded declarations and is separate "
         "from creative contribution percentages."
     )
 
@@ -282,13 +268,13 @@ def _build_section_c(ctx: CertificateContext, cert_class: str) -> dict:
                 "contributor_name": c.get("name", "Unknown"),
                 "role": c.get("role"),
                 "creative_contribution_pct": c.get("creative_contribution_pct"),
-                "ownership_split_pct": c.get("ownership_split_pct") or c.get("split_percentage"),
+                "ownership_split_pct": c.get("ownership_split_pct") if c.get("ownership_split_pct") is not None else c.get("split_percentage"),
                 "ai_assisted_pct": c.get("ai_assisted_pct"),
             })
         return {
             "section": "C",
             "label": "Ownership Splits",
-            "description": "Legal ownership per contributor with creative and AI-assisted percentages.",
+            "description": "Recorded contributor ownership declarations with creative and AI-assisted percentages.",
             "note": note,
             "columns": ["contributor_name", "role", "creative_contribution_pct",
                         "ownership_split_pct", "ai_assisted_pct"],
@@ -296,22 +282,17 @@ def _build_section_c(ctx: CertificateContext, cert_class: str) -> dict:
             "copyright_owner": ctx.copyright_owner or "",
         }
 
-    # Single-owner certificate (standard, hybrid_authorship, ai_assisted)
-    split_row: dict = {
-        "contributor_name": ctx.copyright_owner or ctx.creator_name or "Unknown",
-        "role": "copyright owner",
-        "ownership_split_pct": 100.0,
-    }
-    if cert_class != "standard":
-        split_row["creative_contribution_pct"] = None   # not declared in single-owner path
-        split_row["ai_assisted_pct"] = None
+    if ctx.copyright_owner:
+        description = "A copyright-owner declaration is recorded; no percentage split was inferred."
+    else:
+        description = "No copyright-owner or ownership-percentage declaration is recorded."
 
     return {
         "section": "C",
-        "label": "Ownership Splits",
-        "description": "Legal ownership declaration — separate from creative contribution.",
+        "label": "Ownership Declarations",
+        "description": description,
         "note": note,
         "columns": ["contributor_name", "role", "ownership_split_pct"],
-        "splits": [split_row],
+        "splits": [],
         "copyright_owner": ctx.copyright_owner or "",
     }
