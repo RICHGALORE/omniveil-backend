@@ -107,9 +107,9 @@ def sign_certificate(
     private_key = load_private_key(private_key_b64)
     signature = private_key.sign(cert_hash.encode("utf-8"))
 
-    # The current ingest caller still passes the historical development key ID.
-    # Never allow that label to leak into a production certificate: production
-    # must use the explicitly configured Trust Authority key ID.
+    # Historical callers may still pass the development key ID. Never allow
+    # that label to leak into a production certificate: production must use the
+    # explicitly configured Trust Authority key ID.
     effective_key_id = public_key_id
     if _environment() == "production" and public_key_id == "OV-ROOT-DEV-001":
         effective_key_id = os.getenv("OV_SIGNING_KEY_ID", "").strip()
@@ -263,10 +263,12 @@ def get_or_create_dev_trust_keypair(
     """Backward-compatible ingest hook with production fail-closed behavior.
 
     The name is historical. In production this function never creates or reads
-    a development key; it returns only validated configured production keys.
+    a development key; it returns only validated configured production signing
+    material, including the authoritative key ID.
     """
     material = get_trust_signing_material(dev_path=path)
     return {
         "private_key_b64": material["private_key_b64"],
         "public_key_b64": material["public_key_b64"],
+        "public_key_id": material["public_key_id"],
     }
