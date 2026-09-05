@@ -20,6 +20,14 @@ from app.utils import hive as sightengine_compat
 
 logger = logging.getLogger("omniveil.synthetic_detection")
 
+# Configure Provider A once at import. The legacy module name is retained only
+# for compatibility; its implementation is Sightengine/genai.
+if settings.sightengine_user and settings.sightengine_secret:
+    sightengine_compat.set_sightengine(
+        settings.sightengine_user,
+        settings.sightengine_secret,
+    )
+
 
 def _observation(
     *,
