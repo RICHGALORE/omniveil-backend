@@ -40,6 +40,13 @@ WATERMARKED_DIR = "uploads/watermarked"
 CERTIFICATES_DIR = "uploads/certificates"
 MANIFESTS_DIR = "uploads/manifests"
 
+_AI_DISCLOSURE_VALUES = {"human", "ai_assisted", "ai_generated", "unknown"}
+_AI_DISCLOSURE_ALIASES = {
+    "ai": "ai_generated",
+    "mixed": "ai_assisted",
+    "assisted": "ai_assisted",
+}
+
 # Ensure Render/local upload directories exist before writing files.
 for _dir in (ORIGINALS_DIR, WATERMARKED_DIR, CERTIFICATES_DIR, MANIFESTS_DIR):
     os.makedirs(_dir, exist_ok=True)
@@ -48,6 +55,57 @@ if settings.hive_api_key:
     hive.set_key(settings.hive_api_key)
 if settings.sightengine_user and settings.sightengine_secret:
     hive.set_sightengine(settings.sightengine_user, settings.sightengine_secret)
+
+
+def _optional_text(value):
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _normalize_ai_disclosure(provenance: dict) -> dict:
+    raw_tools = provenance.get("ai_tools_used") or []
+    if not isinstance(raw_tools, list):
+        raise ValueError("ai_tools_used must be a JSON array")
+    if any(not isinstance(tool, str) for tool in raw_tools):
+        raise ValueError("ai_tools_used entries must be strings")
+    ai_tools = [tool.strip() for tool in raw_tools if tool.strip()]
+
+    explicit = _optional_text(provenance.get("ai_disclosure"))
+    value = None
+    if explicit:
+        value = _AI_DISCLOSURE_ALIASES.get(explicit.lower(), explicit.lower())
+        if value not in _AI_DISCLOSURE_VALUES:
+            raise ValueError(
+                "ai_disclosure must be human, ai_assisted, ai_generated, or unknown"
+            )
+    else:
+        legacy_generated = provenance.get("is_ai_generated")
+        if legacy_generated not in (None, True, False):
+            raise ValueError("is_ai_generated must be true, false, or null")
+        if legacy_generated is True:
+            value = "ai_generated"
+        elif legacy_generated is False:
+            value = "ai_assisted" if ai_tools else "human"
+        elif ai_tools:
+            value = "ai_assisted"
+
+    if value == "human" and ai_tools:
+        raise ValueError("ai_disclosure cannot be human when ai_tools_used are declared")
+    if value == "unknown" and ai_tools:
+        raise ValueError("ai_disclosure cannot be unknown when specific AI tools are declared")
+
+    generated = True if value == "ai_generated" else False if value in {"human", "ai_assisted"} else None
+    assisted = True if value == "ai_assisted" else False if value in {"human", "ai_generated"} else None
+
+    return {
+        "value": value,
+        "is_generated": generated,
+        "is_assisted": assisted,
+        "is_disclosed": value is not None,
+        "tools": ai_tools,
+    }
 
 
 def _provenance_event(omni_id, event_type, description, tool_used, actor, now):
@@ -93,6 +151,21 @@ async def ingest_upload(
 
     if not isinstance(provenance, dict) or not isinstance(options, dict):
         raise HTTPException(400, "provenance_json and options_json must be JSON objects")
+
+    try:
+        ai_state = _normalize_ai_disclosure(provenance)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    ai_disclosure = ai_state["value"]
+    is_ai_generated = ai_state["is_generated"]
+    is_ai_assisted = ai_state["is_assisted"]
+    is_ai_disclosed = ai_state["is_disclosed"]
+    ai_tools_used = ai_state["tools"]
+
+    creator_name = _optional_text(provenance.get("creator_name"))
+    copyright_owner = _optional_text(provenance.get("copyright_owner"))
+    license_type = _optional_text(provenance.get("license_type"))
 
     # ── Step 2: Hashes ──────────────────────────────────────────────────────
     sha256 = sha256_bytes(data)
@@ -160,7 +233,6 @@ async def ingest_upload(
     human_performance_present  = provenance.get("human_performance_present")
     human_transformation_present = provenance.get("human_transformation_present")
     ai_disclosure_complete     = provenance.get("ai_disclosure_complete")
-    ai_tools_used              = provenance.get("ai_tools_used") or []  # list[str]
     ai_modification_by_human   = provenance.get("ai_modification_by_human")
     human_authorship_summary   = provenance.get("human_authorship_summary")
     contributor_count          = provenance.get("contributor_count")    # int | None
@@ -180,12 +252,13 @@ async def ingest_upload(
     signals = TrustSignals(
         has_exif=bool(exif),
         has_gps=bool(exif.get("GPS GPSLatitude")),
-        has_creator_name=bool(provenance.get("creator_name")),
+        has_creator_name=bool(creator_name),
         has_creator_org=bool(provenance.get("creator_org")),
         has_copyright=bool(provenance.get("copyright_notice")),
         has_license_url=bool(provenance.get("license_url")),
-        is_ai_generated=provenance.get("is_ai_generated"),
-        is_ai_disclosed=provenance.get("is_ai_generated") is not None,
+        is_ai_generated=is_ai_generated,
+        is_ai_assisted=is_ai_assisted,
+        is_ai_disclosed=is_ai_disclosed,
         ai_detection_score=ai_score,
         invisible_wm_verified=True if wm_invisible else None,
         invisible_wm_confidence=1.0 if wm_invisible else None,
@@ -274,21 +347,10 @@ async def ingest_upload(
         ai_tools_used=ai_tools_used,
         ai_modification_by_human=ai_modification_by_human,
         ai_detection_score=ai_score,
-        is_ai_disclosed=provenance.get("is_ai_generated") is not None,
+        is_ai_disclosed=is_ai_disclosed,
         human_contributor_count=contributor_count,
     )
     cr = compute_copyright_readiness(cr_signals)
-
-    if provenance.get("is_ai_generated") is True:
-        ai_disclosure = "ai"
-    elif provenance.get("is_ai_generated") is False:
-        ai_disclosure = "human"
-    else:
-        ai_disclosure = None
-
-    creator_name = provenance.get("creator_name")
-    copyright_owner = provenance.get("copyright_owner") or creator_name
-    license_type = provenance.get("license_type")
 
     # ── Step 6: Build + sign certificate ────────────────────────────────────
     cert_id = str(uuid.uuid4())
@@ -339,8 +401,8 @@ async def ingest_upload(
         "created_at": now.isoformat(),
     }
 
-    # Development Trust Authority keypair.
-    # Production must use OV private keys from AWS KMS / Secrets Manager / offline vault.
+    # Environment-aware Trust Authority signing material. Production fails closed
+    # unless explicit validated production key material is configured.
     trust_keys = get_or_create_dev_trust_keypair()
 
     signed_cert_payload = ed25519_sign_certificate(
@@ -348,7 +410,7 @@ async def ingest_upload(
         metadata=certificate_metadata_lock,
         private_key_b64=trust_keys["private_key_b64"],
         public_key_b64=trust_keys["public_key_b64"],
-        public_key_id="OV-ROOT-DEV-001",
+        public_key_id=trust_keys["public_key_id"],
     )
 
     signed_cert_payload["metadata_lock"] = certificate_metadata_lock
