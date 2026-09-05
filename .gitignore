@@ -17,6 +17,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 regression_check.py
+production-proof*.json
 
 # Omni Veil local trust authority keys
 .secrets/
