@@ -133,6 +133,75 @@ def _provenance_event(omni_id, event_type, description, tool_used, actor, now):
     )
 
 
+def _existing_ingest_response(db: Session, asset: Asset) -> dict:
+    """Return the original registration facts for an idempotent re-upload.
+
+    A repeated upload may refresh metadata analysis, but it must never rewrite
+    identity, rights, certificate, or authorship facts simply because the same
+    bytes were submitted again.
+    """
+    certificate = (
+        db.query(Certificate)
+        .filter(Certificate.omni_id == asset.omni_id)
+        .order_by(Certificate.issued_at.desc())
+        .first()
+    )
+    cert_payload = {}
+    if certificate:
+        try:
+            cert_payload = json.loads(certificate.cert_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            cert_payload = {}
+
+    return {
+        "omni_id": asset.omni_id,
+        "asset_id": asset.asset_id,
+        "cert_id": certificate.cert_id if certificate else None,
+        "filename": asset.filename,
+        "sha256": asset.sha256,
+        "blake3": asset.blake3,
+        "phash": asset.phash,
+        "trust_score": asset.trust_score,
+        "content_label": asset.content_label,
+        "label_reasons": json.loads(asset.label_reasons or "[]"),
+        "ai_detection_score": asset.ai_detection_score,
+        "ai_disclosure": asset.ai_disclosure,
+        "watermark_applied": asset.watermark_applied,
+        "watermark_visible": asset.watermark_visible,
+        "watermark_invisible": asset.watermark_invisible,
+        "creator_name": asset.creator_name,
+        "copyright_owner": asset.copyright_owner,
+        "license_type": asset.license_type,
+        "original_path": asset.original_path,
+        "watermarked_path": asset.watermarked_path,
+        "certificate_path": asset.certificate_path,
+        "manifest_path": asset.manifest_path,
+        "registry_url": asset.registry_url,
+        "created_at": asset.created_at.isoformat() if asset.created_at else None,
+        "mime_type": asset.file_type,
+        "asset_type": asset.asset_type,
+        "file_size_bytes": asset.file_size_bytes,
+        "certificate_class": asset.certificate_class,
+        "certificate_class_label": asset.certificate_class_label,
+        "copyright_readiness": cert_payload.get("copyright_readiness") or {
+            "score": asset.copyright_readiness_score,
+            "label": asset.copyright_readiness_label,
+            "certificate_class": asset.certificate_class,
+        },
+        "section_a_human_contributions": cert_payload.get(
+            "section_a_human_contributions", {"contributions": [], "contributors": []}
+        ),
+        "section_b_ai_contributions": cert_payload.get(
+            "section_b_ai_contributions", {"ai_tools_used": []}
+        ),
+        "section_c_ownership_splits": cert_payload.get(
+            "section_c_ownership_splits", {"copyright_owner": asset.copyright_owner or "", "splits": []}
+        ),
+        "legal_disclaimer": cert_payload.get("legal_disclaimer"),
+        "registration_reused": True,
+    }
+
+
 @router.post("/upload")
 async def ingest_upload(
     file: UploadFile = File(...),
@@ -172,8 +241,6 @@ async def ingest_upload(
     b3 = blake3_bytes(data)
     omni_id = generate_omni_id(tenant.tenant_id, sha256)
 
-    # Ingest is append-once for a deterministic Omni ID. Never let a repeated
-    # upload silently rewrite creator, rights, certificate, or evidence facts.
     existing = (
         db.query(Asset)
         .filter(
@@ -183,11 +250,38 @@ async def ingest_upload(
         .first()
     )
     if existing:
-        raise HTTPException(
-            409,
-            f"Asset already registered as {omni_id}. Use the existing record; "
-            "changes require an explicit update/version workflow.",
-        )
+        # Idempotent replay: refresh only derived metadata analysis. The original
+        # registration facts remain authoritative and are returned unchanged.
+        try:
+            existing_mime = existing.file_type or file.content_type or "application/octet-stream"
+            extraction = extract_metadata_service(
+                data,
+                filename=existing.filename or file.filename or "file",
+                mime_type=existing_mime,
+            )
+            record = persist_asset_metadata(
+                db,
+                asset_id=existing.asset_id,
+                tenant_id=tenant.tenant_id,
+                omni_id=existing.omni_id,
+                extraction=extraction,
+            )
+            raw, normalized, derived = split_layers(extraction)
+            persist_anomaly_score(
+                db,
+                record,
+                raw=raw,
+                normalized=normalized,
+                derived=derived,
+                mime_type=existing_mime,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Metadata re-analysis skipped for existing omni_id=%s: %s",
+                existing.omni_id,
+                exc,
+            )
+        return _existing_ingest_response(db, existing)
 
     mime_type = file.content_type or "application/octet-stream"
     meta = extract_metadata(data, mime_type)
@@ -645,4 +739,5 @@ async def ingest_upload(
         "section_b_ai_contributions": cert_payload["section_b_ai_contributions"],
         "section_c_ownership_splits": cert_payload["section_c_ownership_splits"],
         "legal_disclaimer": cert_payload["legal_disclaimer"],
+        "registration_reused": False,
     }
