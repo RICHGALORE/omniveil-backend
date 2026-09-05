@@ -1,93 +1,93 @@
-"""
-Copyright Export Package Builder — Omni Veil Authorship Support Infrastructure
+"""Copyright Export Package Builder — Omni Veil Authorship Support Infrastructure.
 
-Assembles a ZIP archive containing all provenance and authorship documentation
-for a given asset. The package is the portable, submittable record of creative
-provenance documentation.
-
-REQUIRED LEGAL DISCLAIMER appears in every file in the package.
+Every generated package includes a canonical stored_facts.json snapshot so the
+human-readable files can be checked against the exact persisted facts used at
+export time.
 """
 
 import io
 import json
 import zipfile
 from datetime import datetime, timezone
-from typing import Optional
 
 from app.core.storage import resolve_stored_path
+from app.services.asset_facts import build_asset_facts
 from app.services.copyright_report import generate_copyright_readiness_report
 from app.services.copyright_readiness import LEGAL_DISCLAIMER
 
 
 def build_export_package(asset) -> tuple[bytes, str]:
-    """
-    Build and return (zip_bytes, suggested_filename).
-
-    The asset must have `.certificates`, `.provenance_events`, and
-    `.contributors` loaded (lazy-loading is fine inside an open session).
-    """
     report = generate_copyright_readiness_report(asset)
-    now    = datetime.now(timezone.utc).isoformat()
+    facts = build_asset_facts(asset, asset.contributors)
+    now = datetime.now(timezone.utc).isoformat()
     folder = f"{asset.omni_id}_copyright_export"
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        _write(zf, folder, "README.txt",                    _build_readme(asset, report, now))
-        _write(zf, folder, "certificate.json",              _get_certificate(asset))
-        _write(zf, folder, "provenance_manifest.json",      _get_manifest(asset))
+        _write(zf, folder, "README.txt", _build_readme(asset, report, facts, now))
+        _write(zf, folder, "stored_facts.json", json.dumps(facts, indent=2, default=str))
+        _write(zf, folder, "certificate.json", _get_certificate(asset))
+        _write(zf, folder, "provenance_manifest.json", _get_manifest(asset))
         _write(zf, folder, "contributor_declarations.json", _build_contributor_declarations(report))
-        _write(zf, folder, "workflow_analysis.json",        _build_workflow_analysis(report))
-        _write(zf, folder, "timestamps.json",               _build_timestamps(report))
-        _write(zf, folder, "audit_history.json",            _build_audit_history(asset, report))
-        _write(zf, folder, "authorship_summary.json",       _build_authorship_summary(asset, report))
+        _write(zf, folder, "workflow_analysis.json", _build_workflow_analysis(report))
+        _write(zf, folder, "timestamps.json", _build_timestamps(report))
+        _write(zf, folder, "audit_history.json", _build_audit_history(asset))
+        _write(zf, folder, "authorship_summary.json", _build_authorship_summary(report))
 
     buf.seek(0)
     return buf.read(), f"{asset.omni_id}_copyright_export.zip"
 
 
-# ── File builders ──────────────────────────────────────────────────────────────
+def _display(value, undeclared="undeclared"):
+    return value if value not in (None, "") else undeclared
 
-def _build_readme(asset, report: dict, now: str) -> str:
-    cr  = report["copyright_readiness"]
-    pc  = report["provenance_continuity"]
-    own = report["ownership_declarations"]
+
+def _build_readme(asset, report: dict, facts: dict, now: str) -> str:
+    cr = report["copyright_readiness"]
+    pc = report["provenance_continuity"]
+    own = facts["rights"]
+    cert_class = cr.get("certificate_class") or "not classified"
     return f"""OMNI VEIL TRUST OS — COPYRIGHT EXPORT PACKAGE
 {"=" * 60}
 
 OMNI ID          : {asset.omni_id}
 FILENAME         : {asset.filename}
 GENERATED AT     : {now}
-CERTIFICATE CLASS: {own.get("certificate_class", "standard") or "standard"}
+CERTIFICATE CLASS: {cert_class}
 
-TRUST SCORE              : {asset.trust_score}
-CONTENT LABEL            : {asset.content_label}
-COPYRIGHT READINESS SCORE: {cr.get("score") or "not yet scored"}
-COPYRIGHT READINESS LABEL: {cr.get("label") or "—"}
+TRUST SCORE              : {_display(asset.trust_score, "not scored")}
+CONTENT LABEL            : {_display(asset.content_label, "not classified")}
+COPYRIGHT READINESS SCORE: {_display(cr.get("score"), "not scored")}
+COPYRIGHT READINESS LABEL: {_display(cr.get("label"), "not classified")}
 PROVENANCE CONTINUITY    : {pc.get("score")} ({pc.get("label")})
+VERIFICATION COUNT       : {facts["trust"]["total_verifications"]}
 
 PACKAGE CONTENTS
 ----------------
 README.txt                    This file
+stored_facts.json             Canonical persisted facts used by this export
 certificate.json              Signed provenance certificate (latest)
 provenance_manifest.json      Provenance manifest with integrity hash
-contributor_declarations.json Formal authorship declarations per contributor
+contributor_declarations.json Stored contributor declarations
 workflow_analysis.json        Workflow lineage and transformation chain
 timestamps.json               Key lifecycle timestamps and event timeline
-audit_history.json            Full immutable audit trail (all provenance events)
-authorship_summary.json       Human authorship evidence and copyright readiness
+audit_history.json            Immutable provenance-event history
+authorship_summary.json       Human-authorship evidence and readiness data
+
+RIGHTS DECLARATIONS
+-------------------
+Copyright Owner : {_display(own.get("copyright_owner"))}
+License         : {_display(own.get("license_type"))}
+Ownership Total : {_display(own.get("ownership_total_pct"))}
+
+Creator attribution does not imply copyright ownership. Ownership percentages
+are included only when explicitly stored.
 
 LEGAL DISCLAIMER
 ----------------
 {LEGAL_DISCLAIMER}
 
-OWNERSHIP
----------
-Copyright Owner : {own.get("copyright_owner") or asset.copyright_owner or "Unknown"}
-License         : {own.get("license_type") or asset.license_type or "—"}
-
-This package was generated by Omni Veil Trust OS.
-Omni Veil provides provenance and authorship documentation infrastructure.
-Final copyright determinations are made by the applicable copyright authority.
+This package was generated by Omni Veil Trust OS from persisted records.
 """
 
 
@@ -96,32 +96,32 @@ def _get_certificate(asset) -> str:
     certs = sorted(asset.certificates, key=lambda c: c.issued_at)
     if certs:
         try:
-            # Re-parse and re-serialize to get consistent formatting
             data = json.loads(certs[-1].cert_json)
             data["_export_note"] = (
-                "This is the latest certificate on record. "
-                "Earlier versions exist in the audit history."
+                "This is the latest certificate on record. Earlier versions, if any, "
+                "remain represented in the audit/report history."
             )
             data["legal_disclaimer"] = LEGAL_DISCLAIMER
             return json.dumps(data, indent=2, default=str)
         except (json.JSONDecodeError, TypeError):
             return certs[-1].cert_json or "{}"
 
-    # Fall back to file on disk if no DB record.
     certificate_path = resolve_stored_path(asset.certificate_path)
     if certificate_path is not None and certificate_path.exists():
         return certificate_path.read_text()
 
-    return json.dumps({"error": "No certificate found", "omni_id": asset.omni_id,
-                       "legal_disclaimer": LEGAL_DISCLAIMER}, indent=2)
+    return json.dumps({
+        "error": "No certificate found",
+        "omni_id": asset.omni_id,
+        "legal_disclaimer": LEGAL_DISCLAIMER,
+    }, indent=2)
 
 
 def _get_manifest(asset) -> str:
-    """Return the provenance manifest, preferring disk (includes manifest_hash)."""
+    """Return persisted manifest, or a clearly labeled DB reconstruction."""
     manifest_path = resolve_stored_path(asset.manifest_path)
     if manifest_path is not None and manifest_path.exists():
         raw = manifest_path.read_text()
-        # Append legal disclaimer to manifest data
         try:
             data = json.loads(raw)
             data["legal_disclaimer"] = LEGAL_DISCLAIMER
@@ -129,56 +129,57 @@ def _get_manifest(asset) -> str:
         except (json.JSONDecodeError, TypeError):
             return raw
 
-    # Rebuild minimal manifest from DB fields
+    facts = build_asset_facts(asset, asset.contributors)
+    identity = facts["identity"]
+    rights = facts["rights"]
     return json.dumps({
-        "manifest_version": "1.1",
-        "omni_id": asset.omni_id,
-        "filename": asset.filename,
-        "sha256": asset.sha256,
-        "blake3": asset.blake3,
-        "phash": asset.phash,
-        "trust_score": asset.trust_score,
-        "content_label": asset.content_label,
-        "copyright_owner": asset.copyright_owner,
-        "license_type": asset.license_type,
-        "created_at": asset.created_at.isoformat() if asset.created_at else None,
-        "note": "Manifest file not found on disk; rebuilt from database record.",
+        "manifest_version": "db-reconstruction-1.0",
+        "omni_id": identity["omni_id"],
+        "asset_id": identity["asset_id"],
+        "filename": identity["filename"],
+        "sha256": identity["sha256"],
+        "blake3": identity["blake3"],
+        "phash": identity["phash"],
+        "trust_score": facts["trust"]["trust_score"],
+        "content_label": facts["trust"]["content_label"],
+        "creator_name": identity["creator_name"],
+        "copyright_owner": rights["copyright_owner"],
+        "license_type": rights["license_type"],
+        "ai_disclosure": facts["ai"]["disclosure"],
+        "created_at": identity["created_at"],
+        "note": "Original manifest file unavailable; reconstructed from persisted database facts.",
         "legal_disclaimer": LEGAL_DISCLAIMER,
     }, indent=2, default=str)
 
 
 def _build_contributor_declarations(report: dict) -> str:
-    payload = {
+    return json.dumps({
         "declarations": report["contributor_declarations"],
         "human_contributors": report["human_contributors"],
         "ownership_declarations": report["ownership_declarations"],
         "legal_disclaimer": LEGAL_DISCLAIMER,
-    }
-    return json.dumps(payload, indent=2, default=str)
+    }, indent=2, default=str)
 
 
 def _build_workflow_analysis(report: dict) -> str:
-    payload = {
+    return json.dumps({
         "workflow_lineage": report["workflow_lineage"],
         "transformation_chain": report["transformation_chain"],
         "ai_tools": report["ai_tools"],
         "legal_disclaimer": LEGAL_DISCLAIMER,
-    }
-    return json.dumps(payload, indent=2, default=str)
+    }, indent=2, default=str)
 
 
 def _build_timestamps(report: dict) -> str:
-    payload = {
+    return json.dumps({
         **report["timestamps"],
         "legal_disclaimer": LEGAL_DISCLAIMER,
-    }
-    return json.dumps(payload, indent=2, default=str)
+    }, indent=2, default=str)
 
 
-def _build_audit_history(asset, report: dict) -> str:
-    """Full provenance event list — the immutable audit trail."""
+def _build_audit_history(asset) -> str:
     events = sorted(asset.provenance_events, key=lambda e: e.timestamp)
-    payload = {
+    return json.dumps({
         "omni_id": asset.omni_id,
         "total_events": len(events),
         "audit_trail": [
@@ -196,45 +197,32 @@ def _build_audit_history(asset, report: dict) -> str:
             for i, ev in enumerate(events)
         ],
         "integrity_note": (
-            "Each event_hash is a SHA-256 of the event's content at write time. "
-            "Any mismatch indicates post-write tampering."
+            "Each event_hash is a SHA-256 of the event content recorded at write time."
         ),
         "legal_disclaimer": LEGAL_DISCLAIMER,
-    }
-    return json.dumps(payload, indent=2, default=str)
+    }, indent=2, default=str)
 
 
-def _build_authorship_summary(asset, report: dict) -> str:
-    cr  = report["copyright_readiness"]
-    payload = {
-        "omni_id": asset.omni_id,
+def _build_authorship_summary(report: dict) -> str:
+    cr = report["copyright_readiness"]
+    return json.dumps({
+        "omni_id": report["omni_id"],
         "human_authorship_evidence": cr.get("human_authorship_evidence", {}),
         "confirmed_human_authorship_forms": cr.get("confirmed_human_authorship_forms", 0),
-        "human_authorship_summary": asset.human_authorship_summary,
+        "human_authorship_summary": cr.get("authorship_summary"),
         "copyright_readiness_score": cr.get("score"),
         "copyright_readiness_label": cr.get("label"),
-        "factors_supporting": cr.get("factors_supporting", []),
-        "factors_limiting": cr.get("factors_limiting", []),
         "ai_tools": report["ai_tools"],
         "provenance_continuity": report["provenance_continuity"],
+        "stored_facts": report["stored_facts"],
         "scoring_notes": {
-            "trust_score": (
-                "Measures provenance integrity — cryptographic chain, watermark, metadata."
-            ),
-            "copyright_readiness_score": (
-                "Measures strength of documented human authorship evidence. "
-                "Separate from trust_score."
-            ),
-            "provenance_continuity_score": (
-                "Measures completeness of the provenance chain — events, hashes, manifest."
-            ),
+            "trust_score": "Measures provenance-integrity signals.",
+            "copyright_readiness_score": "Measures documented human-authorship evidence; not legal ownership.",
+            "provenance_continuity_score": "Measures completeness of the recorded provenance chain.",
         },
         "legal_disclaimer": LEGAL_DISCLAIMER,
-    }
-    return json.dumps(payload, indent=2, default=str)
+    }, indent=2, default=str)
 
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _write(zf: zipfile.ZipFile, folder: str, filename: str, content: str) -> None:
     zf.writestr(f"{folder}/{filename}", content.encode("utf-8"))
