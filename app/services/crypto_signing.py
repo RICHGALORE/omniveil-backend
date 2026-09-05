@@ -260,15 +260,15 @@ def get_trust_signing_material(
 def get_or_create_dev_trust_keypair(
     path: str = ".secrets/ov_root_dev_keypair.json",
 ) -> Dict[str, str]:
-    """Backward-compatible ingest hook with production fail-closed behavior.
+    """Backward-compatible keypair hook.
 
-    The name is historical. In production this function never creates or reads
-    a development key; it returns only validated configured production signing
-    material, including the authoritative key ID.
+    The historical helper keeps its original two-key return shape for existing
+    callers/tests. Production still fails closed because the values are sourced
+    through get_trust_signing_material(). New ingest code should use the full
+    signing-material function when it also needs the authoritative key ID.
     """
     material = get_trust_signing_material(dev_path=path)
     return {
         "private_key_b64": material["private_key_b64"],
         "public_key_b64": material["public_key_b64"],
-        "public_key_id": material["public_key_id"],
     }
