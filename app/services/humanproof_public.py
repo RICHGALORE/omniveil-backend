@@ -7,6 +7,7 @@ from app.services.humanproof import verify_session_chain
 
 
 PUBLIC_SESSION_STATUSES = ("complete", "incomplete", "integrity_failed")
+PUBLIC_PRIVACY_MODES = {"proof", "public"}
 
 
 def _loads(value: str | None, default):
@@ -20,6 +21,27 @@ def _loads(value: str | None, default):
 
 def _iso(value):
     return value.isoformat() + "Z" if value else None
+
+
+def _privacy_mode(events: list[HumanProofEvent]) -> str:
+    """Resolve the creator's public-sharing mode from the immutable start event.
+
+    Legacy sessions predate privacy modes, so they retain the historical safe-summary
+    behavior by defaulting to ``proof``. New sessions can explicitly choose:
+    - private: no HumanProof record is returned through public surfaces;
+    - proof: expose only the safe cryptographic/disclosure summary;
+    - public: currently exposes the same safe summary. Creator-selected public
+      evidence can be layered on later without weakening today's privacy boundary.
+    """
+    for event in events:
+        if event.event_type != "session_started":
+            continue
+        payload = _loads(event.payload_json, {})
+        if not isinstance(payload, dict):
+            return "proof"
+        mode = payload.get("privacy_mode")
+        return mode if mode in {"private", "proof", "public"} else "proof"
+    return "proof"
 
 
 def _safe_location(events: list[HumanProofEvent]) -> dict | None:
@@ -57,10 +79,12 @@ def _ai_summary(events: list[HumanProofEvent]) -> dict | None:
 
 
 def get_public_humanproof_summary(db: Session, omni_id: str) -> dict | None:
-    """Return the public-safe HumanProof state for an asset.
+    """Return the creator-authorized public-safe HumanProof state for an asset.
 
     This intentionally exposes no raw workflow payloads, creator identifiers,
-    source names, precise coordinates, private evidence, or event hashes.
+    source names, precise coordinates, private evidence, or event hashes. A
+    session started in ``private`` mode is treated the same as no public
+    HumanProof record and returns ``None`` on every public embedding surface.
     """
     session = (
         db.query(HumanProofSession)
@@ -80,10 +104,15 @@ def get_public_humanproof_summary(db: Session, omni_id: str) -> dict | None:
         .order_by(HumanProofEvent.sequence.asc())
         .all()
     )
+    privacy_mode = _privacy_mode(events)
+    if privacy_mode not in PUBLIC_PRIVACY_MODES:
+        return None
+
     chain = verify_session_chain(db, session)
 
     return {
         "status": session.status,
+        "privacy_mode": privacy_mode,
         "event_count": len(events),
         "chain_integrity": {
             "valid": bool(chain.get("valid")),
