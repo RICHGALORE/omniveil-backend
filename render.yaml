@@ -5,7 +5,7 @@ services:
     plan: 0.5c-512mb
     dockerfilePath: ./Dockerfile
     autoDeployTrigger: checksPass
-    healthCheckPath: /health
+    healthCheckPath: /ready
     disk:
       name: omniveil-uploads
       mountPath: /app/uploads
