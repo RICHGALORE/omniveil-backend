@@ -131,9 +131,23 @@ class DAWBridge:
         self.last_project_hash: str | None = None
         self.pending_change_since: float | None = None
         self.last_export_scan = 0.0
+        self.environment_context: dict = {}
 
     def _print(self, message: str) -> None:
         print(f"[HumanProof DAW] {message}", flush=True)
+
+    def _capture_environment_context(self) -> dict:
+        hardware = self.detector.connected_hardware()
+        process_only = self.detector.running_process_only_environments()
+        return {
+            "connected_production_hardware": [
+                {"name": item.name, "category": item.category}
+                for item in hardware
+            ],
+            "process_only_environments": process_only,
+            "hardware_detection_method": "macos_usb_device_identity",
+            "hardware_presence_is_creation_proof": False,
+        }
 
     def _ensure_session(self, detection: DAWDetection) -> str:
         remembered = self.state.session_for(detection.project_key)
@@ -171,12 +185,14 @@ class DAWBridge:
             "file_count": fingerprint.file_count,
             "total_bytes": fingerprint.total_bytes,
             "local_path_disclosed": False,
+            **self.environment_context,
         }
 
     def _activate(self, detection: DAWDetection) -> None:
         self.active = detection
         self.session_id = self._ensure_session(detection)
         self.session_started_epoch = time.time()
+        self.environment_context = self._capture_environment_context()
         fingerprint = self.hasher.fingerprint(detection.project_path)
         self.last_project_hash = fingerprint.sha256
         self.last_quick_signature = quick_signature(detection.project_path)
@@ -188,6 +204,12 @@ class DAWBridge:
             creator_id=self.creator_id,
             payload=self._fingerprint_payload(detection, fingerprint, "automatic_project_detected"),
         )
+        hardware_names = [item["name"] for item in self.environment_context["connected_production_hardware"]]
+        if hardware_names:
+            self._print("Connected production hardware: " + ", ".join(hardware_names))
+        process_names = self.environment_context["process_only_environments"]
+        if process_names:
+            self._print("Additional production apps: " + ", ".join(process_names))
         self._print(f"Captured project fingerprint {fingerprint.sha256[:12]}…")
 
     def _record_save_if_stable(self) -> None:
@@ -266,6 +288,7 @@ class DAWBridge:
                 self.active = None
                 self.session_id = None
                 self.pending_change_since = None
+                self.environment_context = {}
             return
 
         if self.active is None or detection.project_key != self.active.project_key:
@@ -286,7 +309,7 @@ class DAWBridge:
             except KeyboardInterrupt:
                 self._print("Stopped by user. Recording sessions are left open for safe finalization.")
                 return
-            except Exception as exc:  # keep the companion alive; never invent evidence
+            except Exception as exc:
                 self._print(f"Detector error: {type(exc).__name__}: {exc}")
             time.sleep(self.config.poll_seconds)
 
