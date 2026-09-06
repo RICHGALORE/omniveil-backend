@@ -1,19 +1,35 @@
 from __future__ import annotations
 
 import hashlib
-import os
+import json
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .profiles import KNOWN_PROJECT_EXTENSIONS, DAWProfile, match_profile, normalize_process_name
+from .profiles import (
+    KNOWN_PROJECT_EXTENSIONS,
+    DAWProfile,
+    HardwareProfile,
+    match_hardware_profile,
+    match_process_only_environment,
+    match_profile,
+    normalize_process_name,
+)
 
 
 @dataclass(frozen=True)
 class RunningProcess:
     pid: int
     command: str
+
+
+@dataclass(frozen=True)
+class ConnectedHardware:
+    name: str
+    category: str
+    observed_name: str
+    profile: HardwareProfile
 
 
 @dataclass(frozen=True)
@@ -36,12 +52,12 @@ class DAWDetection:
 
 
 class MacDAWDetector:
-    """Detect a running DAW by process identity + an actually-open project file.
+    """Detect desktop production apps and connected beat-production hardware.
 
-    The detector deliberately does not treat "DAW process is running" as creation
-    evidence. It requires an open project path from the process file table. Known
-    DAWs get a friendly product name; an unknown foreground app can still be
-    detected when it has an open file matching a known/custom DAW project format.
+    DAW creation evidence still requires an actually-open project file. Connected
+    hardware and process-only apps such as Serato DJ are exposed as environment
+    context only; their presence is never treated as proof that creative work was
+    performed.
     """
 
     def __init__(self, custom_extensions: set[str] | None = None):
@@ -97,6 +113,16 @@ class MacDAWDetector:
             processes.append(RunningProcess(pid=pid, command=command.strip()))
         return processes
 
+    def running_process_only_environments(self) -> list[str]:
+        """Identify supported apps that do not expose DAW-style project files."""
+        names: list[str] = []
+        for process in self.running_processes():
+            display_name = Path(process.command).name
+            environment = match_process_only_environment(display_name)
+            if environment and environment not in names:
+                names.append(environment)
+        return names
+
     def open_files(self, pid: int) -> list[Path]:
         try:
             result = subprocess.run(
@@ -119,9 +145,56 @@ class MacDAWDetector:
             paths.append(Path(raw))
         return paths
 
+    @staticmethod
+    def _collect_usb_names(value) -> list[str]:
+        names: list[str] = []
+        if isinstance(value, dict):
+            for key in ("_name", "product_name", "manufacturer"):
+                item = value.get(key)
+                if isinstance(item, str) and item.strip():
+                    names.append(item.strip())
+            for child in value.values():
+                names.extend(MacDAWDetector._collect_usb_names(child))
+        elif isinstance(value, list):
+            for child in value:
+                names.extend(MacDAWDetector._collect_usb_names(child))
+        return names
+
+    def connected_hardware(self) -> list[ConnectedHardware]:
+        """Return supported USB-connected production hardware without serial IDs."""
+        try:
+            result = subprocess.run(
+                ["system_profiler", "SPUSBDataType", "-json"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            raw = json.loads(result.stdout)
+        except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
+            return []
+
+        detections: list[ConnectedHardware] = []
+        seen: set[str] = set()
+        for observed in self._collect_usb_names(raw):
+            profile = match_hardware_profile(observed)
+            if profile is None or profile.name in seen:
+                continue
+            seen.add(profile.name)
+            detections.append(
+                ConnectedHardware(
+                    name=profile.name,
+                    category=profile.category,
+                    observed_name=observed,
+                    profile=profile,
+                )
+            )
+        return detections
+
     def project_root_from_open_path(self, path: Path) -> Path | None:
         # Handles package-style projects such as Foo.logicx/... as well as
-        # ordinary single-file projects such as Song.als or Session.ptx.
+        # ordinary single-file projects such as Song.als, Session.ptx, MPC .xpj,
+        # and Serato Studio .ssp projects.
         parts = path.parts
         for index, part in enumerate(parts):
             suffix = Path(part).suffix.lower()
@@ -161,8 +234,6 @@ class MacDAWDetector:
         if not roots:
             return None
 
-        # Prefer the most recently changed open project when multiple projects are
-        # open. Failure to stat falls back to a deterministic lexical ordering.
         def score(project: Path) -> tuple[int, str]:
             try:
                 return (project.stat().st_mtime_ns, str(project))
@@ -190,7 +261,6 @@ class MacDAWDetector:
         if not candidates:
             return None
 
-        # Foreground wins. Then known profile. Then recent project modification.
         def score(candidate: DAWDetection) -> tuple[int, int, int]:
             try:
                 modified = candidate.project_path.stat().st_mtime_ns
