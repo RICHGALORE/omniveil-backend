@@ -41,13 +41,3 @@ jobs:
           ENVIRONMENT: test
           DATABASE_URL: sqlite:///./omniveil-ci.db
         run: python -m pytest -q
-
-      - name: Diagnostic live readiness probe
-        if: github.event_name == 'pull_request'
-        run: |
-          set +e
-          echo "--- /health ---"
-          curl -sS -m 30 -w '\nHTTP_STATUS:%{http_code}\n' https://omniveil-backend.onrender.com/health
-          echo "--- /ready ---"
-          curl -sS -m 30 -w '\nHTTP_STATUS:%{http_code}\n' https://omniveil-backend.onrender.com/ready
-          exit 0
