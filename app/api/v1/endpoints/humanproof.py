@@ -82,34 +82,31 @@ def _latest_tenant_asset_session(db: Session, omni_id: str, tenant_id: str) -> H
 
 
 def _public_evidence_summary(serialized: dict, privacy_mode: str) -> dict:
-    """Build an explicit public-safe summary before raw event payloads are removed.
+    """Return derived public-safe HumanProof values without publishing raw evidence.
 
-    The summary contains product values that belong on the HumanProof record art
-    without exposing local paths, path tokens, raw creator notes, USB serials, or
-    private source lineage identifiers in Proof mode.
+    Proof and Public modes both keep creator workflow names, DAW/device names,
+    project identifiers, source Omni IDs, and creator notes private until a
+    separate selected-evidence publishing control exists. Authenticated tenant
+    surfaces may read the full HumanProof record through /assets/{omni_id}.
     """
     events = serialized.get("events") or []
     started = next((event for event in events if event.get("event_type") == "session_started"), None)
     started_payload = (started or {}).get("payload") or {}
 
-    workflow = started_payload.get("workflow")
-    production_environment = (
-        started_payload.get("daw_name")
-        or started_payload.get("production_environment")
-        or (started or {}).get("source_name")
-    )
+    allowed_workflows = {
+        "HumanProof Studio",
+        "HumanProof DAW AutoDetect v1",
+        "HumanProof DAW Manual Setup",
+        "Human Transformation v1",
+    }
+    workflow_value = started_payload.get("workflow")
+    workflow = workflow_value if workflow_value in allowed_workflows else None
 
-    connected_hardware: list[dict] = []
-    seen_hardware: set[tuple[str, str]] = set()
-    additional_apps: list[str] = []
-    seen_apps: set[str] = set()
     automatic_revisions = 0
     automatic_exports = 0
     contributor_declarations = 0
-
     source_lineage = None
     transformations: list[str] = []
-    transformation_statement = None
     final_provenance_disclosure = None
 
     for event in events:
@@ -123,36 +120,13 @@ def _public_evidence_summary(serialized: dict, privacy_mode: str) -> dict:
         if event.get("event_type") in {"contributor_declared", "contributor_attested"}:
             contributor_declarations += 1
 
-        hardware = payload.get("connected_production_hardware") or []
-        if isinstance(hardware, list):
-            for item in hardware:
-                if not isinstance(item, dict):
-                    continue
-                name = item.get("name")
-                category = item.get("category")
-                if not isinstance(name, str) or not name.strip():
-                    continue
-                safe_category = category if isinstance(category, str) else "production_hardware"
-                key = (name.strip(), safe_category)
-                if key in seen_hardware:
-                    continue
-                seen_hardware.add(key)
-                connected_hardware.append({"name": key[0], "category": key[1]})
-
-        apps = payload.get("process_only_environments") or []
-        if isinstance(apps, list):
-            for app in apps:
-                if isinstance(app, str) and app.strip() and app.strip() not in seen_apps:
-                    seen_apps.add(app.strip())
-                    additional_apps.append(app.strip())
-
         if checkpoint == "source_asset_linked":
             source_lineage = {
                 "present": True,
                 "source_ai_disclosure": payload.get("source_ai_disclosure"),
                 "source_ai_detection_score": payload.get("source_ai_detection_score"),
                 "source_content_label": payload.get("source_content_label"),
-                "source_omni_id": payload.get("source_omni_id") if privacy_mode == "public" else None,
+                "source_omni_id": None,
                 "history_preserved": payload.get("history_mutated") is False,
             }
 
@@ -160,8 +134,6 @@ def _public_evidence_summary(serialized: dict, privacy_mode: str) -> dict:
             declared = payload.get("transformations") or []
             if isinstance(declared, list):
                 transformations = [value for value in declared if isinstance(value, str)]
-            if privacy_mode == "public" and isinstance(payload.get("statement"), str):
-                transformation_statement = payload.get("statement")
 
         if event.get("event_type") == "ai_tool_disclosed":
             value = payload.get("final_provenance_disclosure")
@@ -171,9 +143,12 @@ def _public_evidence_summary(serialized: dict, privacy_mode: str) -> dict:
     transformation_verified = bool(source_lineage and transformations)
     return {
         "workflow": workflow,
-        "production_environment": production_environment,
-        "connected_production_hardware": connected_hardware,
-        "additional_production_apps": additional_apps,
+        # Environment/device names are available on authenticated HumanProof and
+        # certificate surfaces. They are intentionally withheld publicly until
+        # creator-selected evidence publishing exists.
+        "production_environment": None,
+        "connected_production_hardware": [],
+        "additional_production_apps": [],
         "automatic_project_detected": any(
             (event.get("payload") or {}).get("checkpoint") == "automatic_project_detected"
             for event in events
@@ -185,7 +160,7 @@ def _public_evidence_summary(serialized: dict, privacy_mode: str) -> dict:
             "verified": transformation_verified,
             "source_lineage": source_lineage,
             "transformations": transformations,
-            "statement": transformation_statement,
+            "statement": None,
             "final_provenance_disclosure": final_provenance_disclosure,
         },
     }
