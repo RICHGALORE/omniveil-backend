@@ -45,7 +45,11 @@ def build_signing_bundle(key_id: str | None = None) -> dict[str, str]:
     if base64.b64encode(derived_public).decode("utf-8") != public_key_b64:
         raise RuntimeError("Generated Ed25519 keypair failed self-validation")
 
-    effective_key_id = (key_id or _default_key_id(public_key_b64)).strip()
+    effective_key_id = (
+        _default_key_id(public_key_b64)
+        if key_id is None
+        else key_id.strip()
+    )
     if not effective_key_id or effective_key_id == "OV-ROOT-DEV-001":
         raise ValueError("Production signing key ID must be non-empty and must not use the development key ID")
 
