@@ -66,6 +66,106 @@ def _tenant_session(db: Session, session_id: str, tenant_id: str) -> HumanProofS
     return session
 
 
+def _latest_tenant_asset_session(db: Session, omni_id: str, tenant_id: str) -> HumanProofSession:
+    session = (
+        db.query(HumanProofSession)
+        .filter(
+            HumanProofSession.omni_id == omni_id,
+            HumanProofSession.tenant_id == tenant_id,
+        )
+        .order_by(HumanProofSession.closed_at.desc(), HumanProofSession.created_at.desc())
+        .first()
+    )
+    if not session:
+        raise HTTPException(404, "HumanProof record not found")
+    return session
+
+
+def _public_evidence_summary(serialized: dict, privacy_mode: str) -> dict:
+    """Return derived public-safe HumanProof values without publishing raw evidence.
+
+    Proof and Public modes both keep creator workflow names, DAW/device names,
+    project identifiers, source Omni IDs, and creator notes private until a
+    separate selected-evidence publishing control exists. Authenticated tenant
+    surfaces may read the full HumanProof record through /assets/{omni_id}.
+    """
+    events = serialized.get("events") or []
+    started = next((event for event in events if event.get("event_type") == "session_started"), None)
+    started_payload = (started or {}).get("payload") or {}
+
+    allowed_workflows = {
+        "HumanProof Studio",
+        "HumanProof DAW AutoDetect v1",
+        "HumanProof DAW Manual Setup",
+        "Human Transformation v1",
+    }
+    workflow_value = started_payload.get("workflow")
+    workflow = workflow_value if workflow_value in allowed_workflows else None
+
+    automatic_revisions = 0
+    automatic_exports = 0
+    contributor_declarations = 0
+    source_lineage = None
+    transformations: list[str] = []
+    final_provenance_disclosure = None
+
+    for event in events:
+        payload = event.get("payload") or {}
+        checkpoint = payload.get("checkpoint")
+
+        if checkpoint == "automatic_project_revision":
+            automatic_revisions += 1
+        if checkpoint == "automatic_audio_export":
+            automatic_exports += 1
+        if event.get("event_type") in {"contributor_declared", "contributor_attested"}:
+            contributor_declarations += 1
+
+        if checkpoint == "source_asset_linked":
+            source_lineage = {
+                "present": True,
+                "source_ai_disclosure": payload.get("source_ai_disclosure"),
+                "source_ai_detection_score": payload.get("source_ai_detection_score"),
+                "source_content_label": payload.get("source_content_label"),
+                "source_omni_id": None,
+                "history_preserved": payload.get("history_mutated") is False,
+            }
+
+        if checkpoint == "human_transformation_declared":
+            declared = payload.get("transformations") or []
+            if isinstance(declared, list):
+                transformations = [value for value in declared if isinstance(value, str)]
+
+        if event.get("event_type") == "ai_tool_disclosed":
+            value = payload.get("final_provenance_disclosure")
+            if isinstance(value, str):
+                final_provenance_disclosure = value
+
+    transformation_verified = bool(source_lineage and transformations)
+    return {
+        "workflow": workflow,
+        # Environment/device names are available on authenticated HumanProof and
+        # certificate surfaces. They are intentionally withheld publicly until
+        # creator-selected evidence publishing exists.
+        "production_environment": None,
+        "connected_production_hardware": [],
+        "additional_production_apps": [],
+        "automatic_project_detected": any(
+            (event.get("payload") or {}).get("checkpoint") == "automatic_project_detected"
+            for event in events
+        ),
+        "automatic_revisions": automatic_revisions,
+        "automatic_exports": automatic_exports,
+        "contributor_declarations": contributor_declarations,
+        "human_transformation": {
+            "verified": transformation_verified,
+            "source_lineage": source_lineage,
+            "transformations": transformations,
+            "statement": None,
+            "final_provenance_disclosure": final_provenance_disclosure,
+        },
+    }
+
+
 @router.post("/sessions", status_code=201)
 def start_humanproof_session(
     body: StartSessionRequest,
@@ -115,6 +215,17 @@ def get_humanproof_session(
     db: Session = Depends(get_db),
 ):
     return serialize_session(db, _tenant_session(db, session_id, tenant.tenant_id))
+
+
+@router.get("/assets/{omni_id}")
+def get_humanproof_for_asset(
+    omni_id: str,
+    tenant: Client = Depends(resolve_tenant),
+    db: Session = Depends(get_db),
+):
+    """Return the latest full HumanProof record for an authenticated tenant asset."""
+    session = _latest_tenant_asset_session(db, omni_id, tenant.tenant_id)
+    return serialize_session(db, session)
 
 
 @router.post("/sessions/{session_id}/events", status_code=201)
@@ -215,7 +326,10 @@ def get_public_humanproof_summary(
         raise HTTPException(404, "HumanProof record not found")
 
     summary = serialize_session(db, session, public=True)
-    summary["privacy_mode"] = compact_summary["privacy_mode"]
+    privacy_mode = compact_summary["privacy_mode"]
+    summary["privacy_mode"] = privacy_mode
+    summary["evidence_summary"] = _public_evidence_summary(summary, privacy_mode)
+
     for event in summary["events"]:
         # Public HumanProof exposes cryptographic continuity and safe disclosure
         # summaries, not the creator's raw workflow evidence.
