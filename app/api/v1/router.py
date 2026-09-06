@@ -9,6 +9,7 @@ from app.api.v1.endpoints.clients import router as clients_router
 from app.api.v1.endpoints.metadata import router as metadata_router
 from app.api.v1.endpoints.humanproof import router as humanproof_router
 from app.api.v1.endpoints.human_transformation import router as human_transformation_router
+from app.api.v1.endpoints.humanproof_publication import router as humanproof_publication_router
 from app.api.v1.endpoints.c2pa import router as c2pa_router
 from app.api.v1.endpoints.spectra import router as spectra_router
 from app.api.v1.endpoints.evidence import router as evidence_router
@@ -25,6 +26,7 @@ api_router.include_router(clients_router)
 api_router.include_router(metadata_router)
 api_router.include_router(humanproof_router)
 api_router.include_router(human_transformation_router)
+api_router.include_router(humanproof_publication_router)
 api_router.include_router(c2pa_router)
 api_router.include_router(spectra_router)
 api_router.include_router(evidence_router)
