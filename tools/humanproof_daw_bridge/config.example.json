@@ -1,0 +1,10 @@
+{
+  "poll_seconds": 2,
+  "debounce_seconds": 4,
+  "export_stability_seconds": 5,
+  "export_scan_seconds": 5,
+  "custom_project_extensions": [".futureproject"],
+  "export_roots": [
+    "~/Music"
+  ]
+}
